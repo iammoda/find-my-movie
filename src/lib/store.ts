@@ -10,12 +10,15 @@ import type {
   Comparison,
   ExportPayload,
   ExposureBehavior,
+  Friend,
+  FriendInvite,
   Movie,
   MovieCredit,
   MovieEmbedding,
   MovieEmbeddingMatch,
   MovieEnrichment,
   MovieExposure,
+  Profile,
   Rating,
   RatingReason,
   RatingReasonSentiment,
@@ -46,6 +49,9 @@ interface StoreState {
   taxonomyEmbeddings: TaxonomyEmbedding[];
   recommendationRuns: RecommendationRun[];
   hiddenRecommendations: number[];
+  profiles: Profile[];
+  friendInvites: FriendInvite[];
+  friendships: { profileA: string; profileB: string; invitedBy: string | null; createdAt: string }[];
 }
 
 interface RecommendationItemInput {
@@ -128,6 +134,16 @@ export interface MovieStore {
   saveMovieEnrichment(enrichment: MovieEnrichment): Promise<void>;
   listTaxonomyEmbeddings(version?: string): Promise<TaxonomyEmbedding[]>;
   saveTaxonomyEmbeddings(embeddings: TaxonomyEmbedding[]): Promise<void>;
+  getProfile(profileId: string): Promise<Profile | null>;
+  updateProfileDisplayName(displayName: string, profileId?: string): Promise<Profile>;
+  createFriendInvite(profileId?: string): Promise<FriendInvite>;
+  getFriendInvite(token: string): Promise<FriendInvite | null>;
+  listFriendInvites(profileId?: string): Promise<FriendInvite[]>;
+  deleteFriendInvite(token: string, profileId?: string): Promise<void>;
+  /** Creates (or no-ops on) the canonical friendship pair between the two profiles. */
+  addFriendship(otherProfileId: string, invitedBy: string | null, profileId?: string): Promise<void>;
+  listFriends(profileId?: string): Promise<Friend[]>;
+  removeFriendship(otherProfileId: string, profileId?: string): Promise<void>;
   reset(profileId?: string): Promise<void>;
   exportData(profileId?: string): Promise<ExportPayload>;
 }
@@ -182,8 +198,16 @@ function initialState(): StoreState {
     movieEnrichments: [],
     taxonomyEmbeddings: [],
     recommendationRuns: [],
-    hiddenRecommendations: []
+    hiddenRecommendations: [],
+    profiles: [{ id: DEFAULT_PROFILE_ID, email: null, displayName: null }],
+    friendInvites: [],
+    friendships: []
   };
+}
+
+/** Friendship rows store the pair in canonical (sorted) order. */
+function canonicalPair(a: string, b: string): [string, string] {
+  return a < b ? [a, b] : [b, a];
 }
 
 function localStorePath() {
@@ -208,7 +232,10 @@ class LocalJsonStore implements MovieStore {
         appealSignals: parsed.appealSignals ?? [],
         watchlist: parsed.watchlist ?? [],
         movieEnrichments: parsed.movieEnrichments ?? [],
-        taxonomyEmbeddings: parsed.taxonomyEmbeddings ?? []
+        taxonomyEmbeddings: parsed.taxonomyEmbeddings ?? [],
+        profiles: parsed.profiles ?? initialState().profiles,
+        friendInvites: parsed.friendInvites ?? [],
+        friendships: parsed.friendships ?? []
       };
     } catch {
       const state = initialState();
@@ -630,6 +657,77 @@ class LocalJsonStore implements MovieStore {
     await this.write(state);
   }
 
+  async getProfile(profileId: string) {
+    const state = await this.read();
+    return state.profiles.find((profile) => profile.id === profileId) ?? null;
+  }
+
+  async updateProfileDisplayName(displayName: string, profileId = DEFAULT_PROFILE_ID) {
+    const state = await this.read();
+    const existing = state.profiles.find((profile) => profile.id === profileId);
+    const next: Profile = existing ? { ...existing, displayName } : { id: profileId, email: null, displayName };
+    state.profiles = [...state.profiles.filter((profile) => profile.id !== profileId), next];
+    await this.write(state);
+    return next;
+  }
+
+  async createFriendInvite(profileId = DEFAULT_PROFILE_ID) {
+    const state = await this.read();
+    const invite: FriendInvite = {
+      token: crypto.randomUUID(),
+      inviterProfileId: profileId,
+      createdAt: now(),
+      expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+    };
+    state.friendInvites = [...state.friendInvites, invite];
+    await this.write(state);
+    return invite;
+  }
+
+  async getFriendInvite(token: string) {
+    const state = await this.read();
+    return state.friendInvites.find((invite) => invite.token === token) ?? null;
+  }
+
+  async listFriendInvites(profileId = DEFAULT_PROFILE_ID) {
+    const state = await this.read();
+    return state.friendInvites.filter((invite) => invite.inviterProfileId === profileId);
+  }
+
+  async deleteFriendInvite(token: string, profileId = DEFAULT_PROFILE_ID) {
+    const state = await this.read();
+    state.friendInvites = state.friendInvites.filter(
+      (invite) => !(invite.token === token && invite.inviterProfileId === profileId)
+    );
+    await this.write(state);
+  }
+
+  async addFriendship(otherProfileId: string, invitedBy: string | null, profileId = DEFAULT_PROFILE_ID) {
+    const [profileA, profileB] = canonicalPair(profileId, otherProfileId);
+    const state = await this.read();
+    if (state.friendships.some((row) => row.profileA === profileA && row.profileB === profileB)) return;
+    state.friendships = [...state.friendships, { profileA, profileB, invitedBy, createdAt: now() }];
+    await this.write(state);
+  }
+
+  async listFriends(profileId = DEFAULT_PROFILE_ID) {
+    const state = await this.read();
+    const profileById = new Map(state.profiles.map((profile) => [profile.id, profile]));
+    return state.friendships
+      .filter((row) => row.profileA === profileId || row.profileB === profileId)
+      .map((row) => {
+        const friendId = row.profileA === profileId ? row.profileB : row.profileA;
+        return { profileId: friendId, displayName: profileById.get(friendId)?.displayName ?? null, createdAt: row.createdAt };
+      });
+  }
+
+  async removeFriendship(otherProfileId: string, profileId = DEFAULT_PROFILE_ID) {
+    const [profileA, profileB] = canonicalPair(profileId, otherProfileId);
+    const state = await this.read();
+    state.friendships = state.friendships.filter((row) => !(row.profileA === profileA && row.profileB === profileB));
+    await this.write(state);
+  }
+
   async reset(profileId = DEFAULT_PROFILE_ID) {
     const state = await this.read();
     state.ratings = state.ratings.filter((rating) => rating.profileId !== profileId);
@@ -715,6 +813,15 @@ function dbFactToTasteFact(row: Record<string, unknown>): TasteFact {
     value: String(row.value),
     weight: Number(row.weight ?? 1),
     source: row.source as TasteFact["source"]
+  };
+}
+
+function dbInviteToInvite(row: Record<string, unknown>): FriendInvite {
+  return {
+    token: String(row.token),
+    inviterProfileId: String(row.inviter_profile_id),
+    createdAt: String(row.created_at),
+    expiresAt: String(row.expires_at)
   };
 }
 
@@ -1489,6 +1596,94 @@ class SupabaseMovieStore implements MovieStore {
         };
       })
     );
+  }
+
+  async getProfile(profileId: string) {
+    const { data, error } = await this.db
+      .from("profiles")
+      .select("id, email, display_name")
+      .eq("id", profileId)
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) return null;
+    return { id: String(data.id), email: (data.email as string | null) ?? null, displayName: (data.display_name as string | null) ?? null };
+  }
+
+  async updateProfileDisplayName(displayName: string, profileId = DEFAULT_PROFILE_ID) {
+    const { data, error } = await this.db
+      .from("profiles")
+      .update({ display_name: displayName })
+      .eq("id", profileId)
+      .select("id, email, display_name")
+      .single();
+    if (error) throw error;
+    return { id: String(data.id), email: (data.email as string | null) ?? null, displayName: (data.display_name as string | null) ?? null };
+  }
+
+  async createFriendInvite(profileId = DEFAULT_PROFILE_ID) {
+    const { data, error } = await this.db
+      .from("friend_invites")
+      .insert({ inviter_profile_id: profileId })
+      .select("*")
+      .single();
+    if (error) throw error;
+    return dbInviteToInvite(data as Record<string, unknown>);
+  }
+
+  async getFriendInvite(token: string) {
+    const { data, error } = await this.db.from("friend_invites").select("*").eq("token", token).maybeSingle();
+    if (error) throw error;
+    return data ? dbInviteToInvite(data as Record<string, unknown>) : null;
+  }
+
+  async listFriendInvites(profileId = DEFAULT_PROFILE_ID) {
+    const { data, error } = await this.db
+      .from("friend_invites")
+      .select("*")
+      .eq("inviter_profile_id", profileId)
+      .order("created_at", { ascending: false });
+    if (error) throw error;
+    return ((data ?? []) as Record<string, unknown>[]).map(dbInviteToInvite);
+  }
+
+  async deleteFriendInvite(token: string, profileId = DEFAULT_PROFILE_ID) {
+    const { error } = await this.db.from("friend_invites").delete().eq("token", token).eq("inviter_profile_id", profileId);
+    if (error) throw error;
+  }
+
+  async addFriendship(otherProfileId: string, invitedBy: string | null, profileId = DEFAULT_PROFILE_ID) {
+    const [profileA, profileB] = canonicalPair(profileId, otherProfileId);
+    const { error } = await this.db
+      .from("friendships")
+      .upsert({ profile_a: profileA, profile_b: profileB, invited_by: invitedBy }, { onConflict: "profile_a,profile_b", ignoreDuplicates: true });
+    if (error) throw error;
+  }
+
+  async listFriends(profileId = DEFAULT_PROFILE_ID) {
+    const { data, error } = await this.db
+      .from("friendships")
+      .select("profile_a, profile_b, created_at")
+      .or(`profile_a.eq.${profileId},profile_b.eq.${profileId}`);
+    if (error) throw error;
+    const rows = (data ?? []) as { profile_a: string; profile_b: string; created_at: string }[];
+    const friendIds = rows.map((row) => (row.profile_a === profileId ? row.profile_b : row.profile_a));
+    if (!friendIds.length) return [];
+    const { data: profiles, error: profileError } = await this.db
+      .from("profiles")
+      .select("id, display_name")
+      .in("id", friendIds);
+    if (profileError) throw profileError;
+    const nameById = new Map((profiles ?? []).map((profile) => [profile.id as string, (profile.display_name as string | null) ?? null]));
+    return rows.map((row) => {
+      const friendId = row.profile_a === profileId ? row.profile_b : row.profile_a;
+      return { profileId: friendId, displayName: nameById.get(friendId) ?? null, createdAt: row.created_at };
+    });
+  }
+
+  async removeFriendship(otherProfileId: string, profileId = DEFAULT_PROFILE_ID) {
+    const [profileA, profileB] = canonicalPair(profileId, otherProfileId);
+    const { error } = await this.db.from("friendships").delete().eq("profile_a", profileA).eq("profile_b", profileB);
+    if (error) throw error;
   }
 
   async reset(profileId = DEFAULT_PROFILE_ID) {

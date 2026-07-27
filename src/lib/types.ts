@@ -100,6 +100,26 @@ export interface Comparison {
   createdAt: string;
 }
 
+export interface Profile {
+  id: string;
+  email: string | null;
+  displayName: string | null;
+}
+
+export interface FriendInvite {
+  token: string;
+  inviterProfileId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
+/** A friendship from one profile's point of view: the other side + metadata. */
+export interface Friend {
+  profileId: string;
+  displayName: string | null;
+  createdAt: string;
+}
+
 export interface AppealSignal {
   profileId: string;
   tmdbId: number;
