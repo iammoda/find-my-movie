@@ -22,6 +22,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </Link>
           <nav className="top-nav" aria-label="Secondary navigation">
             <Link href="/taste">Taste</Link>
+            {authEnabled ? <Link href="/friends">Friends</Link> : null}
             <Link href="/about">About</Link>
             {authEnabled ? (
               user ? (

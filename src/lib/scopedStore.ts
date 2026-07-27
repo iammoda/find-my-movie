@@ -24,6 +24,10 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     saveMovieEnrichment: (enrichment) => store.saveMovieEnrichment(enrichment),
     listTaxonomyEmbeddings: (version) => store.listTaxonomyEmbeddings(version),
     saveTaxonomyEmbeddings: (embeddings) => store.saveTaxonomyEmbeddings(embeddings),
+    // getProfile takes an explicit id (rendering friend/inviter names needs
+    // cross-profile reads of public identity fields only).
+    getProfile: (targetProfileId) => store.getProfile(targetProfileId),
+    getFriendInvite: (token) => store.getFriendInvite(token),
 
     // Profile-scoped methods: the bound profile id always wins.
     listRatings: () => store.listRatings(profileId),
@@ -51,6 +55,13 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     listWatchlist: () => store.listWatchlist(profileId),
     upsertWatchlistItem: (tmdbId, status) => store.upsertWatchlistItem(tmdbId, status, profileId),
     removeWatchlistItem: (tmdbId) => store.removeWatchlistItem(tmdbId, profileId),
+    updateProfileDisplayName: (displayName) => store.updateProfileDisplayName(displayName, profileId),
+    createFriendInvite: () => store.createFriendInvite(profileId),
+    listFriendInvites: () => store.listFriendInvites(profileId),
+    deleteFriendInvite: (token) => store.deleteFriendInvite(token, profileId),
+    addFriendship: (otherProfileId, invitedBy) => store.addFriendship(otherProfileId, invitedBy, profileId),
+    listFriends: () => store.listFriends(profileId),
+    removeFriendship: (otherProfileId) => store.removeFriendship(otherProfileId, profileId),
     reset: () => store.reset(profileId),
     exportData: () => store.exportData(profileId)
   };

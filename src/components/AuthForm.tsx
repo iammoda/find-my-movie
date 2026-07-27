@@ -16,6 +16,7 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const nextPath = safeNextPath(searchParams.get("next"));
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -43,7 +44,7 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
       const response = await fetch("/api/auth/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password, displayName: displayName.trim() || undefined })
       });
       const payload = (await response.json().catch(() => null)) as
         | { error?: string; signedIn?: boolean; requiresEmailConfirmation?: boolean }
@@ -74,6 +75,19 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
           : "Your ratings, watchlist, and recommendations live on your account."}
       </p>
       <form className="auth-form" onSubmit={handleSubmit}>
+        {!isLogin && (
+          <label>
+            Display name
+            <input
+              type="text"
+              value={displayName}
+              onChange={(event) => setDisplayName(event.target.value)}
+              autoComplete="nickname"
+              maxLength={40}
+              placeholder="How friends will see you"
+            />
+          </label>
+        )}
         <label>
           Email
           <input

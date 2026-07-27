@@ -1,8 +1,13 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 
-/** Pages that require a signed-in user when accounts are enabled. */
-const PROTECTED_PATHS = ["/taste", "/debug"];
+/** Path prefixes that require a signed-in user when accounts are enabled. */
+const PROTECTED_PREFIXES = ["/taste", "/debug"];
+/**
+ * Exact-match protected pages. /friends must NOT be a prefix rule:
+ * /friends/invite/[token] renders signed-out so new users can join.
+ */
+const PROTECTED_EXACT = ["/friends"];
 /** Auth pages a signed-in user gets bounced away from. */
 const AUTH_PATHS = ["/login", "/signup"];
 
@@ -44,7 +49,10 @@ export async function middleware(request: NextRequest) {
 
   const { pathname } = request.nextUrl;
 
-  if (!user && PROTECTED_PATHS.some((path) => pathname === path || pathname.startsWith(`${path}/`))) {
+  const needsAuth =
+    PROTECTED_PREFIXES.some((path) => pathname === path || pathname.startsWith(`${path}/`)) ||
+    PROTECTED_EXACT.includes(pathname);
+  if (!user && needsAuth) {
     const loginUrl = request.nextUrl.clone();
     loginUrl.pathname = "/login";
     loginUrl.search = `?next=${encodeURIComponent(pathname)}`;

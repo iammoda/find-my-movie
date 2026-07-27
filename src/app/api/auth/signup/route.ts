@@ -9,7 +9,8 @@ export const dynamic = "force-dynamic";
 const signupSchema = z.object({
   email: z.string().trim().email(),
   // Supabase hashes with bcrypt; 72 bytes is the effective maximum.
-  password: z.string().min(8).max(72)
+  password: z.string().min(8).max(72),
+  displayName: z.string().trim().min(1).max(40).optional()
 });
 
 export async function POST(request: Request) {
@@ -26,7 +27,9 @@ export async function POST(request: Request) {
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.signUp({
     email: parsed.data.email,
-    password: parsed.data.password
+    password: parsed.data.password,
+    // The auth trigger copies display_name from metadata onto the profile row.
+    options: parsed.data.displayName ? { data: { display_name: parsed.data.displayName } } : undefined
   });
   if (error) return NextResponse.json({ error: error.message }, { status: 400 });
   if (!data.user) return NextResponse.json({ error: "Signup failed" }, { status: 400 });

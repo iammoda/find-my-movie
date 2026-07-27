@@ -2120,3 +2120,200 @@ pre {
 .signin-modal-primary:hover {
   filter: brightness(1.06);
 }
+
+/* ---------- Friends ---------- */
+
+.friends-page {
+  width: min(760px, 100%);
+  margin: 0 auto;
+  padding: 20px clamp(14px, 4vw, 36px) 56px;
+}
+
+.friends-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.friends-card {
+  padding: 18px 20px;
+  border: 1px solid rgba(147, 143, 158, 0.22);
+  border-radius: var(--radius-panel);
+  background: var(--surface-container);
+  box-shadow: var(--shadow-soft);
+}
+
+.friends-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.friends-card-copy {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.friends-name-row {
+  display: flex;
+  gap: 10px;
+}
+
+.friends-name-row input {
+  flex: 1;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-list);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.friends-name-row input:focus-visible {
+  border-color: var(--primary);
+  outline: none;
+}
+
+.friends-invite-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.friends-invite-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.friends-invite-url {
+  flex: 1;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.icon-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border: 1px solid rgba(147, 143, 158, 0.22);
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--muted);
+}
+
+.icon-chip:hover {
+  background: var(--state-layer);
+  color: var(--ink);
+}
+
+.friends-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.friends-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.friends-row strong {
+  display: block;
+  font-size: 15px;
+}
+
+.friends-since {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.friends-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.friend-common {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid rgba(147, 143, 158, 0.18);
+  border-radius: var(--radius-list);
+  background: var(--surface);
+}
+
+.friend-strip h4 {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.friend-strip-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.friend-movie-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.friend-poster {
+  position: relative;
+  width: 84px;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  border: 1px solid rgba(147, 143, 158, 0.24);
+  border-radius: var(--radius-list);
+  box-shadow: var(--shadow-soft);
+}
+
+.invite-accept {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.invite-accept .auth-submit {
+  width: 100%;
+}
+
+.invite-auth-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.invite-auth-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+}

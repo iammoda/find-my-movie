@@ -48,6 +48,15 @@ function mockStore(): MovieStore {
     "saveMovieEnrichment",
     "listTaxonomyEmbeddings",
     "saveTaxonomyEmbeddings",
+    "getProfile",
+    "updateProfileDisplayName",
+    "createFriendInvite",
+    "getFriendInvite",
+    "listFriendInvites",
+    "deleteFriendInvite",
+    "addFriendship",
+    "listFriends",
+    "removeFriendship",
     "reset",
     "exportData"
   ];
@@ -74,6 +83,33 @@ describe("scopedStore", () => {
 
     await store.reset();
     expect(inner.reset).toHaveBeenCalledWith("user-123");
+  });
+
+  it("binds friend methods to the session profile, except explicit-id lookups", async () => {
+    const inner = mockStore();
+    const store = scopedStore(inner, "user-123");
+
+    await store.createFriendInvite("someone-else");
+    expect(inner.createFriendInvite).toHaveBeenCalledWith("user-123");
+
+    await store.addFriendship("friend-9", "friend-9", "someone-else");
+    expect(inner.addFriendship).toHaveBeenCalledWith("friend-9", "friend-9", "user-123");
+
+    await store.listFriends("someone-else");
+    expect(inner.listFriends).toHaveBeenCalledWith("user-123");
+
+    await store.removeFriendship("friend-9");
+    expect(inner.removeFriendship).toHaveBeenCalledWith("friend-9", "user-123");
+
+    await store.updateProfileDisplayName("Mo", "someone-else");
+    expect(inner.updateProfileDisplayName).toHaveBeenCalledWith("Mo", "user-123");
+
+    // Cross-profile identity lookups take the explicit id (public fields only).
+    await store.getProfile("friend-9");
+    expect(inner.getProfile).toHaveBeenCalledWith("friend-9");
+
+    await store.getFriendInvite("tok-1");
+    expect(inner.getFriendInvite).toHaveBeenCalledWith("tok-1");
   });
 
   it("overrides a caller-provided profile id", async () => {
