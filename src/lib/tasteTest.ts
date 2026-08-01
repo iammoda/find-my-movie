@@ -34,10 +34,54 @@ export function usableTasteTestMovie(movie: Movie, relaxed = false) {
 const RELAXED_QUEUE_TRIGGER_DIVISOR = 3;
 
 // Model-belief probes (predicted rank score is on the user's 0-10 scale).
-const BELIEVED_HIT_MIN_SCORE = 7.5;
+// Absolute guardrails for the adaptive probe bands below.
+const BELIEVED_HIT_MIN_SCORE = 6.5;
+const BELIEVED_HIT_MAX_SCORE = 8.5;
 const FRONTIER_MIN_SCORE = 5.5;
-const FRONTIER_PEAK_SCORE = 6.5;
+const FRONTIER_MAX_SCORE = 7.0;
+const BELIEVED_MISS_MIN_SCORE = 1.5;
 const BELIEVED_MISS_MAX_SCORE = 3.5;
+
+interface ProbeBands {
+  hitsMin: number;
+  frontierMin: number;
+  frontierPeak: number;
+  missMax: number;
+}
+
+/**
+ * Probe bands adapt to the deck's own prediction distribution. Ridge
+ * shrinkage compresses raw predictions into a narrow band (a fitted model can
+ * emit 97% of candidates between 5.5 and 7.5), so fixed thresholds degenerate:
+ * everything lands in "frontier" and the believed-hits bucket sits empty.
+ * Quantiles restore meaning - hits are the model's relative top of belief -
+ * while the absolute clamps keep tiny or degenerate distributions sane.
+ */
+function probeBands(predictions: Map<number, number> | undefined, candidates: Movie[]): ProbeBands {
+  const fallback: ProbeBands = {
+    hitsMin: 7.5,
+    frontierMin: FRONTIER_MIN_SCORE,
+    frontierPeak: 6.5,
+    missMax: BELIEVED_MISS_MAX_SCORE
+  };
+  if (!predictions?.size) return fallback;
+
+  const values = candidates
+    .flatMap((movie) => {
+      const predicted = predictions.get(movie.tmdbId);
+      return predicted === undefined ? [] : [predicted];
+    })
+    .sort((a, b) => a - b);
+  if (!values.length) return fallback;
+
+  const quantile = (p: number) => values[Math.min(values.length - 1, Math.floor(p * values.length))];
+  const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
+
+  const hitsMin = clamp(quantile(0.85), BELIEVED_HIT_MIN_SCORE, BELIEVED_HIT_MAX_SCORE);
+  const frontierMin = Math.min(clamp(quantile(0.55), FRONTIER_MIN_SCORE, FRONTIER_MAX_SCORE), hitsMin - 0.1);
+  const missMax = clamp(quantile(0.1), BELIEVED_MISS_MIN_SCORE, BELIEVED_MISS_MAX_SCORE);
+  return { hitsMin, frontierMin, frontierPeak: (frontierMin + hitsMin) / 2, missMax };
+}
 const EXPOSURE_REPEAT_PENALTY = 0.08;
 const MAX_PROBE_BUCKET = 30;
 /** Keep disconfirming probes sparse: at most ~1 believed miss per this many cards. */
@@ -258,7 +302,8 @@ function buildModelProbeBuckets(
   exposedCounts: Map<number, number>,
   seenPrior: (movie: Movie) => number,
   traitEvidence: Map<string, number>,
-  limit: number
+  limit: number,
+  bands: ProbeBands
 ): ModelProbeBuckets {
   const predictions = options.predictions ?? new Map<number, number>();
   const neighborhoodSimilarity = options.neighborhoodSimilarity ?? new Map<number, number>();
@@ -276,24 +321,24 @@ function buildModelProbeBuckets(
     const predicted = predictions.get(movie.tmdbId);
 
     if (predicted !== undefined) {
-      if (predicted <= BELIEVED_MISS_MAX_SCORE) {
+      if (predicted <= bands.missMax) {
         believedMisses.push({ movie, key: ((5 - predicted) / 5) * prior - repeatPenalty });
-      } else if (predicted >= BELIEVED_HIT_MIN_SCORE) {
+      } else if (predicted >= bands.hitsMin) {
         believedHits.push({ movie, key: ((predicted - 5) / 5) * prior - repeatPenalty });
-      } else if (predicted > FRONTIER_MIN_SCORE) {
-        frontier.push({ movie, key: (1 - Math.abs(predicted - FRONTIER_PEAK_SCORE)) * prior - repeatPenalty });
+      } else if (predicted > bands.frontierMin) {
+        frontier.push({ movie, key: (1 - Math.abs(predicted - bands.frontierPeak)) * prior - repeatPenalty });
       }
     }
 
     // Active learning: informativeness x ratability. A verdict on a familiar,
     // high-uncertainty movie shrinks the model's posterior the most per swipe.
     const sigma = uncertainty.get(movie.tmdbId);
-    if (sigma !== undefined && (predicted === undefined || predicted > BELIEVED_MISS_MAX_SCORE)) {
+    if (sigma !== undefined && (predicted === undefined || predicted > bands.missMax)) {
       explore.push({ movie, key: sigma * prior - repeatPenalty });
     }
 
     const similarity = neighborhoodSimilarity.get(movie.tmdbId);
-    if (similarity !== undefined && (predicted === undefined || predicted > BELIEVED_MISS_MAX_SCORE)) {
+    if (similarity !== undefined && (predicted === undefined || predicted > bands.missMax)) {
       neighborhood.push({ movie, key: similarity * prior - repeatPenalty });
     }
 
@@ -305,7 +350,7 @@ function buildModelProbeBuckets(
         if (evidence > TRAIT_GAP_MAX_EVIDENCE) continue;
         gap += fact.weight * ((TRAIT_GAP_MAX_EVIDENCE + 1 - evidence) / (TRAIT_GAP_MAX_EVIDENCE + 1));
       }
-      if (gap > 0 && (predicted === undefined || predicted > BELIEVED_MISS_MAX_SCORE)) {
+      if (gap > 0 && (predicted === undefined || predicted > bands.missMax)) {
         traitGap.push({ movie, key: gap * prior - repeatPenalty });
       }
     }
@@ -399,10 +444,11 @@ function buildQueueWithFloors(
 
   // Confident misses are only eligible through the sparse probe bucket - the
   // coverage buckets below must not refill the deck with predicted dislikes.
+  const bands = probeBands(options.predictions, candidates);
   const confidentMissIds = new Set<number>();
   if (options.predictions) {
     for (const [tmdbId, predicted] of options.predictions) {
-      if (predicted <= BELIEVED_MISS_MAX_SCORE) confidentMissIds.add(tmdbId);
+      if (predicted <= bands.missMax) confidentMissIds.add(tmdbId);
     }
   }
 
@@ -467,7 +513,7 @@ function buildQueueWithFloors(
 
   if (exploitShare > 0) {
     const traitEvidence = buildTraitEvidence(ratings, byId);
-    const probes = buildModelProbeBuckets(candidates, options, exposedCounts, seenPrior, traitEvidence, limit);
+    const probes = buildModelProbeBuckets(candidates, options, exposedCounts, seenPrior, traitEvidence, limit, bands);
     const hasProbes = Object.values(probes).some((bucket) => bucket.length > 0);
 
     if (hasProbes) {

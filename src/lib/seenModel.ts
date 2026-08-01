@@ -1,3 +1,4 @@
+import { MEDIA_PROFILES } from "@/lib/constants";
 import { mainstreamScore } from "@/lib/quality";
 import type { AppealSignal, Movie, MovieExposure, Rating } from "@/lib/types";
 
@@ -38,11 +39,16 @@ function sigmoid(z: number): number {
 
 /** Sparse feature vector as (key, value) pairs; vocab is built from the labeled set. */
 function featurePairs(movie: Movie): Array<[string, number]> {
+  // Per-media vote scales: TMDB TV vote counts run ~5-10x lower than movies,
+  // so movie-scale normalizers read every show as "obscure" and flatten the
+  // prior on the TV deck. Normalizing per media lets movie-trained weights
+  // transfer to TV feature ranges sensibly.
+  const profile = MEDIA_PROFILES[movie.mediaType ?? "movie"];
   const pairs: Array<[string, number]> = [["bias", 1]];
-  pairs.push(["votes", Math.min(1.5, Math.log10(1 + Math.max(0, movie.voteCount)) / 4)]);
+  pairs.push(["votes", Math.min(1.5, Math.log10(1 + Math.max(0, movie.voteCount)) / profile.voteReachNorm)]);
   // Linear vote reach: the log scale compresses exactly the mid-popular band
   // (5k vs 10k votes) where real users' seen/not-seen boundary lives.
-  pairs.push(["votesLinear", Math.min(2, Math.max(0, movie.voteCount) / 10000)]);
+  pairs.push(["votesLinear", Math.min(2, Math.max(0, movie.voteCount) / profile.voteLinearScale)]);
   pairs.push(["popularity", Math.min(1.5, Math.log10(1 + Math.max(0, movie.popularity)) / 3)]);
   // TV familiarity differs systematically from movies (vote scales, viewing habits).
   if (movie.mediaType === "tv") pairs.push(["media:tv", 1]);

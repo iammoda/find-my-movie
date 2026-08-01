@@ -131,6 +131,9 @@ describe("scopedStore", () => {
     expect(inner.getMovie).toHaveBeenCalledWith(603);
 
     await store.matchMovieEmbeddings([0.1], 5, [1]);
-    expect(inner.matchMovieEmbeddings).toHaveBeenCalledWith([0.1], 5, [1]);
+    expect(inner.matchMovieEmbeddings).toHaveBeenCalledWith([0.1], 5, [1], undefined);
+
+    await store.matchMovieEmbeddings([0.1], 5, [1], "tv");
+    expect(inner.matchMovieEmbeddings).toHaveBeenCalledWith([0.1], 5, [1], "tv");
   });
 });

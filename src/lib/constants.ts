@@ -94,6 +94,8 @@ export interface MediaProfile {
   voteConfidence: number;
   /** log10 normalizer for vote-reach terms (familiarity, mainstream). */
   voteReachNorm: number;
+  /** Linear vote scale for the seen-model feature (votes at "everyone knows it"). */
+  voteLinearScale: number;
   minBrowseVoteCount: number;
   minTopRatedVoteCount: number;
   minGenreVoteCount: number;
@@ -112,6 +114,7 @@ export const MEDIA_PROFILES: Record<MediaType, MediaProfile> = {
   movie: {
     voteConfidence: 800,
     voteReachNorm: 4,
+    voteLinearScale: 10000,
     minBrowseVoteCount: MIN_BROWSE_VOTE_COUNT,
     minTopRatedVoteCount: MIN_TOP_RATED_VOTE_COUNT,
     minGenreVoteCount: MIN_GENRE_VOTE_COUNT,
@@ -128,6 +131,7 @@ export const MEDIA_PROFILES: Record<MediaType, MediaProfile> = {
   tv: {
     voteConfidence: 250,
     voteReachNorm: 3.4,
+    voteLinearScale: 1500,
     minBrowseVoteCount: 100,
     minTopRatedVoteCount: 250,
     minGenreVoteCount: 130,

@@ -88,6 +88,7 @@ async function candidateEmbeddings(store: MovieStore, tmdbIds: number[]): Promis
  */
 async function deckModelSignals(
   store: MovieStore,
+  mediaType: MediaType,
   movies: Movie[],
   ratings: Rating[],
   exposures: MovieExposure[],
@@ -135,7 +136,7 @@ async function deckModelSignals(
     if (queries.length) {
       const excluded = Array.from(handledIds);
       const matches = (
-        await Promise.all(queries.map((query) => store.matchMovieEmbeddings(query, NEIGHBORHOOD_MATCHES_PER_ANCHOR, excluded)))
+        await Promise.all(queries.map((query) => store.matchMovieEmbeddings(query, NEIGHBORHOOD_MATCHES_PER_ANCHOR, excluded, mediaType)))
       ).flat();
       for (const match of matches) {
         neighborhoodSimilarity.set(match.tmdbId, Math.max(neighborhoodSimilarity.get(match.tmdbId) ?? 0, match.similarity));
@@ -176,7 +177,7 @@ export async function GET(request: Request) {
       cached = await store.listMovies(mediaType);
     }
 
-    const modelSignals = await deckModelSignals(store, cached, ratings, exposures, appealSignals, watchlist);
+    const modelSignals = await deckModelSignals(store, mediaType, cached, ratings, exposures, appealSignals, watchlist);
     const movies = buildTasteTestQueue(cached, ratings, exposures, 80, { appealSignals, ...modelSignals });
     if (movies.length < QUEUE_REPLENISH_THRESHOLD) maybeExpandCatalog(store, mediaType, cached.length);
     return NextResponse.json({ movies: movies.map(publicMovie), page: parsed.data.page, source: parsed.data.category });

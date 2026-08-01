@@ -972,7 +972,12 @@ export async function generateRecommendations(
       embeddingMatches = (
         await Promise.all(
           queries.map((query, index) =>
-            store.matchMovieEmbeddings(query, index === 0 && model?.embeddingDirection ? ANCHOR_MATCH_COUNT : LOVED_ANCHOR_MATCH_COUNT, excludedIds)
+            store.matchMovieEmbeddings(
+              query,
+              index === 0 && model?.embeddingDirection ? ANCHOR_MATCH_COUNT : LOVED_ANCHOR_MATCH_COUNT,
+              excludedIds,
+              mediaType
+            )
           )
         )
       ).flat();

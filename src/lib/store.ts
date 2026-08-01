@@ -131,7 +131,12 @@ export interface MovieStore {
   deleteExposures(tmdbId: number, source: MovieExposure["source"], profileId?: string): Promise<void>;
   listMovieEmbeddings(tmdbIds?: number[]): Promise<MovieEmbedding[]>;
   upsertMovieEmbedding(embedding: MovieEmbedding): Promise<void>;
-  matchMovieEmbeddings(queryEmbedding: number[], matchCount: number, excludeTmdbIds?: number[]): Promise<MovieEmbeddingMatch[]>;
+  matchMovieEmbeddings(
+    queryEmbedding: number[],
+    matchCount: number,
+    excludeTmdbIds?: number[],
+    mediaType?: MediaType
+  ): Promise<MovieEmbeddingMatch[]>;
   hideRecommendation(tmdbId: number, reason?: string | null, profileId?: string): Promise<void>;
   listHiddenRecommendations(profileId?: string): Promise<number[]>;
   saveRecommendationRun(input: RecommendationRunInput, profileId?: string): Promise<RecommendationRun>;
@@ -576,11 +581,16 @@ class LocalJsonStore implements MovieStore {
     await this.write(state);
   }
 
-  async matchMovieEmbeddings(queryEmbedding: number[], matchCount: number, excludeTmdbIds: number[] = []) {
+  async matchMovieEmbeddings(queryEmbedding: number[], matchCount: number, excludeTmdbIds: number[] = [], mediaType?: MediaType) {
     const state = await this.read();
     const excluded = new Set(excludeTmdbIds);
     return state.movieEmbeddings
-      .filter((embedding) => embedding.embedding.length && !excluded.has(embedding.tmdbId))
+      .filter(
+        (embedding) =>
+          embedding.embedding.length &&
+          !excluded.has(embedding.tmdbId) &&
+          (mediaType == null || mediaTypeOfId(embedding.tmdbId) === mediaType)
+      )
       .map((embedding) => ({
         tmdbId: embedding.tmdbId,
         similarity: cosineSimilarity(queryEmbedding, embedding.embedding)
@@ -1583,11 +1593,12 @@ class SupabaseMovieStore implements MovieStore {
     if (error) throw error;
   }
 
-  async matchMovieEmbeddings(queryEmbedding: number[], matchCount: number, excludeTmdbIds: number[] = []) {
+  async matchMovieEmbeddings(queryEmbedding: number[], matchCount: number, excludeTmdbIds: number[] = [], mediaType?: MediaType) {
     const { data, error } = await this.db.rpc("match_movie_embeddings", {
       query_embedding: queryEmbedding,
       match_count: matchCount,
-      exclude_tmdb_ids: excludeTmdbIds
+      exclude_tmdb_ids: excludeTmdbIds,
+      media: mediaType ?? null
     });
     if (error) {
       console.warn("Embedding match unavailable, falling back to trait-only recommendations", error.message);

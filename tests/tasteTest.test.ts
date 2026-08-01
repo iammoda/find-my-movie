@@ -191,18 +191,29 @@ describe("taste test queue", () => {
     expect(probeCount).toBeGreaterThanOrEqual(30);
   });
 
-  it("orders frontier probes by closeness to the frontier peak", () => {
-    const movies = [movie(1, "Near Peak"), movie(2, "Far From Peak"), ...[3, 4, 5].map((id) => movie(id, `Filler ${id}`))];
+  it("adapts probe bands to the prediction distribution and orders frontier by peak closeness", () => {
+    // Distribution: background 5.0s, a mid band, and a clear top. Quantile
+    // bands make the relative top a believed hit and the mid band frontier.
+    const movies = Array.from({ length: 12 }, (_, i) => movie(i + 1, `Probe ${i + 1}`));
     const predictions = new Map<number, number>([
-      [1, 6.5],
-      [2, 7.4]
+      [1, 6.25], // frontier, nearest the band peak
+      [2, 6.55], // frontier, farther from the peak
+      [3, 5.0],
+      [4, 5.0],
+      [5, 5.0],
+      [6, 5.0],
+      [7, 5.0],
+      [8, 6.0],
+      [9, 6.7], // relative top of belief -> hit
+      [10, 8.0] // clear top -> hit
     ]);
 
-    const queue = buildTasteTestQueue(movies, [], [], 5, { predictions, modelRatingSampleCount: FULL_CONFIDENCE });
+    const queue = buildTasteTestQueue(movies, [], [], 12, { predictions, modelRatingSampleCount: FULL_CONFIDENCE });
     const ids = queue.map((item) => item.tmdbId);
 
+    expect(ids).toContain(10); // top-of-belief surfaces via the hits bucket
     expect(ids.indexOf(1)).toBeGreaterThanOrEqual(0);
-    expect(ids.indexOf(1)).toBeLessThan(ids.indexOf(2));
+    expect(ids.indexOf(1)).toBeLessThan(ids.indexOf(2)); // frontier ordered by peak closeness
   });
 
   it("falls back to coverage ordering when the predictions map is empty", () => {

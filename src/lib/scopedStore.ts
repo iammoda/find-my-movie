@@ -18,8 +18,8 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     replaceTasteFactsForMovie: (tmdbId, source, facts) => store.replaceTasteFactsForMovie(tmdbId, source, facts),
     listMovieEmbeddings: (tmdbIds) => store.listMovieEmbeddings(tmdbIds),
     upsertMovieEmbedding: (embedding) => store.upsertMovieEmbedding(embedding),
-    matchMovieEmbeddings: (queryEmbedding, matchCount, excludeTmdbIds) =>
-      store.matchMovieEmbeddings(queryEmbedding, matchCount, excludeTmdbIds),
+    matchMovieEmbeddings: (queryEmbedding, matchCount, excludeTmdbIds, mediaType) =>
+      store.matchMovieEmbeddings(queryEmbedding, matchCount, excludeTmdbIds, mediaType),
     getMovieEnrichment: (tmdbId) => store.getMovieEnrichment(tmdbId),
     listMovieEnrichments: () => store.listMovieEnrichments(),
     saveMovieEnrichment: (enrichment) => store.saveMovieEnrichment(enrichment),
