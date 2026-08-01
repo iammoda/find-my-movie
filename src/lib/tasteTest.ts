@@ -3,16 +3,22 @@ import { handledMovieIds } from "@/lib/handled";
 import { isPrimaryAudienceMovie } from "@/lib/language";
 import { isReleasedAtLeastDaysAgo, mainstreamScore, qualityScore } from "@/lib/quality";
 import { ratingWeight } from "@/lib/rating";
+import { buildSeenProbability } from "@/lib/seenModel";
 import { deriveTasteFacts, factKey, isDeepFact } from "@/lib/taste";
 import type { AppealSignal, Movie, MovieExposure, Rating } from "@/lib/types";
+
+export { buildSeenPrior } from "@/lib/seenModel";
 
 const MIN_TASTE_TEST_VOTE_AVERAGE = 6.25;
 
 // Relaxed floors keep the deck alive once the strict mainstream pool is
-// exhausted by a heavy rater; quality still bounded, just mid-tier.
-const RELAXED_MIN_VOTE_COUNT = 200;
-const RELAXED_MIN_VOTE_AVERAGE = 5.8;
-const RELAXED_MIN_POPULARITY = 4;
+// exhausted by a heavy rater. They widen quality/popularity slightly but
+// never dip below the strict vote floor: the user's own swipe data shows
+// "haven't seen" cards are mid-popular, not low-vote, so digging into the
+// deep catalog only adds unratable obscurities.
+const RELAXED_MIN_VOTE_COUNT = MIN_BROWSE_VOTE_COUNT;
+const RELAXED_MIN_VOTE_AVERAGE = 6.0;
+const RELAXED_MIN_POPULARITY = 5;
 /** Rebuild with relaxed floors when the strict queue comes up shorter than limit/N. */
 const RELAXED_QUEUE_TRIGGER_DIVISOR = 3;
 
@@ -21,7 +27,6 @@ const BELIEVED_HIT_MIN_SCORE = 7.5;
 const FRONTIER_MIN_SCORE = 5.5;
 const FRONTIER_PEAK_SCORE = 6.5;
 const BELIEVED_MISS_MAX_SCORE = 3.5;
-const UNCERTAIN_BAND = 0.5;
 const EXPOSURE_REPEAT_PENALTY = 0.08;
 const MAX_PROBE_BUCKET = 30;
 /** Keep disconfirming probes sparse: at most ~1 believed miss per this many cards. */
@@ -30,28 +35,30 @@ const MISS_PROBE_INTERVAL = 8;
 const TRAIT_GAP_MAX_EVIDENCE = 2;
 
 /**
- * Exploit/explore schedule: the share of the deck spent testing the model's
- * beliefs ramps with how much rated history powers the model, capped at 55%
- * so coverage/discovery always keeps at least 45%.
+ * Exploit/explore schedule: once the taste model exists (>= MIN samples) the
+ * deck's primary job is testing the model's beliefs, so exploitation starts
+ * at half the deck and ramps to 80% as rated history grows. The remaining
+ * coverage share keeps discovery alive but is drawn from familiar titles only.
  */
-const EXPLOIT_SHARE_MAX = 0.55;
+const EXPLOIT_SHARE_BASE = 0.5;
+const EXPLOIT_SHARE_MAX = 0.8;
 const CONFIDENCE_MIN_SAMPLES = 15;
-const CONFIDENCE_FULL_SAMPLES = 100;
+const CONFIDENCE_FULL_SAMPLES = 60;
 
 interface ProbeWeights {
   frontier: number;
   neighborhood: number;
-  uncertain: number;
+  explore: number;
   hits: number;
   traitGap: number;
   misses: number;
 }
 
-const DEFAULT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.3, neighborhood: 0.25, uncertain: 0.15, hits: 0.15, traitGap: 0.1, misses: 0.05 };
+const DEFAULT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.25, neighborhood: 0.2, explore: 0.15, hits: 0.25, traitGap: 0.1, misses: 0.05 };
 /** Hot streak: the user is agreeing with everything - push harder, riskier probes. */
-const HOT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.35, neighborhood: 0.2, uncertain: 0.15, hits: 0.05, traitGap: 0.15, misses: 0.1 };
+const HOT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.3, neighborhood: 0.15, explore: 0.2, hits: 0.1, traitGap: 0.15, misses: 0.1 };
 /** Cold streak: rebuild confidence with likely hits before probing again. */
-const COLD_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.15, neighborhood: 0.25, uncertain: 0.05, hits: 0.4, traitGap: 0.15, misses: 0 };
+const COLD_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.15, neighborhood: 0.25, explore: 0.05, hits: 0.4, traitGap: 0.15, misses: 0 };
 
 export function usableTasteTestMovie(movie: Movie, relaxed = false) {
   const minVotes = relaxed ? RELAXED_MIN_VOTE_COUNT : MIN_BROWSE_VOTE_COUNT;
@@ -165,59 +172,6 @@ function latestExposureSource(tmdbId: number, exposures: MovieExposure[]) {
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0]?.source;
 }
 
-/**
- * How plausible is it that this user has seen this movie? Blends the movie's
- * mainstream reach with the user's own history: decades/genres they keep
- * marking "haven't seen" (or swiping away unseen) sink, well-rated ones rise.
- * Multiplied into probe and base ordering so deck slots stay ratable.
- */
-export function buildSeenPrior(
-  ratings: Rating[],
-  exposures: MovieExposure[],
-  appealSignals: AppealSignal[],
-  byId: Map<number, Movie>
-): (movie: Movie) => number {
-  const seenIds = new Set(ratings.map((rating) => rating.tmdbId));
-  const unseenIds = new Set<number>();
-  for (const exposure of exposures) {
-    if (exposure.source === "not_seen" && !seenIds.has(exposure.tmdbId)) unseenIds.add(exposure.tmdbId);
-  }
-  for (const signal of appealSignals) {
-    if (!seenIds.has(signal.tmdbId)) unseenIds.add(signal.tmdbId);
-  }
-
-  const seenCounts = new Map<string, number>();
-  const unseenCounts = new Map<string, number>();
-  const bucketKeys = (movie: Movie) => {
-    const keys: string[] = [];
-    if (movie.releaseDate) keys.push(`decade:${Math.floor(Number(movie.releaseDate.slice(0, 4)) / 10) * 10}`);
-    for (const genre of movie.genres.slice(0, 2)) keys.push(`genre:${genre.name}`);
-    return keys;
-  };
-  const record = (ids: Set<number>, counts: Map<string, number>) => {
-    for (const tmdbId of ids) {
-      const movie = byId.get(tmdbId);
-      if (!movie) continue;
-      for (const key of bucketKeys(movie)) counts.set(key, (counts.get(key) ?? 0) + 1);
-    }
-  };
-  record(seenIds, seenCounts);
-  record(unseenIds, unseenCounts);
-
-  const rateFor = (key: string) => {
-    const seen = seenCounts.get(key) ?? 0;
-    const unseen = unseenCounts.get(key) ?? 0;
-    // Laplace-smoothed; buckets with no history sit at 0.5.
-    return (seen + 1) / (seen + unseen + 2);
-  };
-
-  return (movie: Movie) => {
-    const keys = bucketKeys(movie);
-    const historyRate = keys.length ? keys.reduce((sum, key) => sum + rateFor(key), 0) / keys.length : 0.5;
-    return (0.35 + 0.65 * mainstreamScore(movie)) * (0.25 + 0.75 * historyRate);
-  };
-}
-
 interface TasteProbeSignals {
   positive: Map<string, number>;
   negative: Map<string, number>;
@@ -266,6 +220,8 @@ export interface TasteTestQueueOptions {
   predictions?: Map<number, number>;
   /** tmdbId -> embedding similarity (0-1) to the user's top-loved movies. */
   neighborhoodSimilarity?: Map<number, number>;
+  /** tmdbId -> model uncertainty (0-1, GP-variance proxy); powers the explore probes. */
+  uncertainty?: Map<number, number>;
   /** Rating samples powering the learned model; scales the exploit share. */
   modelRatingSampleCount?: number;
 }
@@ -273,7 +229,7 @@ export interface TasteTestQueueOptions {
 interface ModelProbeBuckets {
   frontier: Movie[];
   neighborhood: Movie[];
-  uncertain: Movie[];
+  explore: Movie[];
   believedHits: Movie[];
   traitGap: Movie[];
   believedMisses: Movie[];
@@ -292,10 +248,11 @@ function topMovies(items: ScoredMovie[], cap: number): Movie[] {
 }
 
 /**
- * Belief-testing buckets, all discounted by the seen prior and repeat penalty:
+ * Belief-testing buckets, all discounted by P(seen) and the repeat penalty:
  * - frontier: predicted just above neutral - sharpens the like/dislike boundary
  * - neighborhood: unrated movies embedding-close to the user's top-loved
- * - uncertain: predictions near the middle, where a verdict is most informative
+ * - explore: highest model uncertainty (far from everything rated) - the
+ *   active-learning slots where a verdict teaches the model the most
  * - believedHits: confident positives, validating what the model thinks the user loves
  * - traitGap: carries deep traits the model has little evidence about
  * - believedMisses: confident negatives, kept sparse but never zero for calibration
@@ -310,9 +267,10 @@ function buildModelProbeBuckets(
 ): ModelProbeBuckets {
   const predictions = options.predictions ?? new Map<number, number>();
   const neighborhoodSimilarity = options.neighborhoodSimilarity ?? new Map<number, number>();
+  const uncertainty = options.uncertainty ?? new Map<number, number>();
   const frontier: ScoredMovie[] = [];
   const neighborhood: ScoredMovie[] = [];
-  const uncertain: ScoredMovie[] = [];
+  const explore: ScoredMovie[] = [];
   const believedHits: ScoredMovie[] = [];
   const traitGap: ScoredMovie[] = [];
   const believedMisses: ScoredMovie[] = [];
@@ -329,9 +287,14 @@ function buildModelProbeBuckets(
         believedHits.push({ movie, key: ((predicted - 5) / 5) * prior - repeatPenalty });
       } else if (predicted > FRONTIER_MIN_SCORE) {
         frontier.push({ movie, key: (1 - Math.abs(predicted - FRONTIER_PEAK_SCORE)) * prior - repeatPenalty });
-      } else if (Math.abs(predicted - 5) <= UNCERTAIN_BAND) {
-        uncertain.push({ movie, key: (1 - Math.abs(predicted - 5) / UNCERTAIN_BAND) * prior - repeatPenalty });
       }
+    }
+
+    // Active learning: informativeness x ratability. A verdict on a familiar,
+    // high-uncertainty movie shrinks the model's posterior the most per swipe.
+    const sigma = uncertainty.get(movie.tmdbId);
+    if (sigma !== undefined && (predicted === undefined || predicted > BELIEVED_MISS_MAX_SCORE)) {
+      explore.push({ movie, key: sigma * prior - repeatPenalty });
     }
 
     const similarity = neighborhoodSimilarity.get(movie.tmdbId);
@@ -356,7 +319,7 @@ function buildModelProbeBuckets(
   return {
     frontier: topMovies(frontier, MAX_PROBE_BUCKET),
     neighborhood: topMovies(neighborhood, MAX_PROBE_BUCKET),
-    uncertain: topMovies(uncertain, MAX_PROBE_BUCKET),
+    explore: topMovies(explore, MAX_PROBE_BUCKET),
     believedHits: topMovies(believedHits, MAX_PROBE_BUCKET),
     traitGap: topMovies(traitGap, MAX_PROBE_BUCKET),
     believedMisses: topMovies(believedMisses, Math.max(1, Math.floor(limit / MISS_PROBE_INTERVAL)))
@@ -414,7 +377,7 @@ function buildQueueWithFloors(
     exposedCounts.set(exposure.tmdbId, (exposedCounts.get(exposure.tmdbId) ?? 0) + 1);
   }
 
-  const seenPrior = buildSeenPrior(ratings, exposures, appealSignals, byId);
+  const seenPrior = buildSeenProbability(ratings, exposures, appealSignals, byId);
   const candidates = movies
     .filter((movie) => usableTasteTestMovie(movie, relaxed) && !handledIds.has(movie.tmdbId))
     .map((movie) => ({
@@ -426,13 +389,18 @@ function buildQueueWithFloors(
 
   const { positiveCount, negativeCount } = recentRatingStreak(ratings);
 
-  // Exploit share ramps with model confidence; zero when the model has no signal.
+  // Exploit share: high as soon as the model has enough samples to exist -
+  // testing the model's beliefs is the deck's primary job, not coverage.
   const hasModelSignal = Boolean(options.predictions?.size || options.neighborhoodSimilarity?.size);
+  const sampleCount = options.modelRatingSampleCount ?? 0;
   const confidence = Math.max(
     0,
-    Math.min(1, ((options.modelRatingSampleCount ?? 0) - CONFIDENCE_MIN_SAMPLES) / (CONFIDENCE_FULL_SAMPLES - CONFIDENCE_MIN_SAMPLES))
+    Math.min(1, (sampleCount - CONFIDENCE_MIN_SAMPLES) / (CONFIDENCE_FULL_SAMPLES - CONFIDENCE_MIN_SAMPLES))
   );
-  const exploitShare = hasModelSignal ? EXPLOIT_SHARE_MAX * confidence : 0;
+  const exploitShare =
+    hasModelSignal && sampleCount >= CONFIDENCE_MIN_SAMPLES
+      ? EXPLOIT_SHARE_BASE + (EXPLOIT_SHARE_MAX - EXPLOIT_SHARE_BASE) * confidence
+      : 0;
 
   // Confident misses are only eligible through the sparse probe bucket - the
   // coverage buckets below must not refill the deck with predicted dislikes.
@@ -442,9 +410,17 @@ function buildQueueWithFloors(
       if (predicted <= BELIEVED_MISS_MAX_SCORE) confidentMissIds.add(tmdbId);
     }
   }
-  const coverageCandidates = confidentMissIds.size
-    ? candidates.filter((movie) => !confidentMissIds.has(movie.tmdbId))
-    : candidates;
+
+  // Familiarity bar for coverage/backfill: keep at least 3x the deck of the
+  // most plausibly-seen candidates, but never bucket or backfill from the
+  // unfamiliar tail while familiar supply exists. Probe buckets see the full
+  // pool (they are already P(seen)-weighted movie by movie).
+  const priorById = new Map(candidates.map((movie) => [movie.tmdbId, seenPrior(movie)]));
+  const sortedPriors = [...priorById.values()].sort((a, b) => b - a);
+  const familiarityBar = Math.min(0.5, sortedPriors[Math.min(sortedPriors.length - 1, limit * 3)] ?? 0);
+  const coverageCandidates = candidates.filter(
+    (movie) => !confidentMissIds.has(movie.tmdbId) && (priorById.get(movie.tmdbId) ?? 0) >= familiarityBar
+  );
 
   const genreBuckets = new Map<string, Movie[]>();
   const decadeBuckets = new Map<string, Movie[]>();
@@ -506,7 +482,7 @@ function buildQueueWithFloors(
           [
             { movies: probes.frontier, weight: exploitShare * weights.frontier },
             { movies: probes.neighborhood, weight: exploitShare * weights.neighborhood },
-            { movies: probes.uncertain, weight: exploitShare * weights.uncertain },
+            { movies: probes.explore, weight: exploitShare * weights.explore },
             { movies: probes.believedHits, weight: exploitShare * weights.hits },
             { movies: probes.traitGap, weight: exploitShare * weights.traitGap },
             { movies: probes.believedMisses, weight: exploitShare * weights.misses },

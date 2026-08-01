@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Movie, Rating, Verdict } from "@/lib/types";
 import { ComparisonPrompt } from "@/components/ComparisonPrompt";
 import { RecommendationsPanel } from "@/components/RecommendationsPanel";
+import { TasteDiagnostics } from "@/components/TasteDiagnostics";
 import { TasteSummaryPanel } from "@/components/TasteSummaryPanel";
 import { WatchlistPanel } from "@/components/WatchlistPanel";
 
@@ -110,6 +111,7 @@ export default function TastePage() {
       <div className="taste-page-grid">
         <div className="taste-page-summary">
           <TasteSummaryPanel />
+          <TasteDiagnostics />
         </div>
         <div className="taste-page-main">
           <RecommendationsPanel ratingsVersion={ratingsVersion} onRate={rateMovie} />

@@ -260,6 +260,71 @@ describe("recommendation scoring", () => {
   });
 });
 
+describe("generateRecommendations familiarity guarantees", () => {
+  it("caps obscure picks even when they outscore familiar ones", async () => {
+    // Obscure candidates carry a higher vote average, which outscores the
+    // familiar ones on quality alone - the cap must still bound them.
+    const ratedMovies = Array.from({ length: 10 }, (_, index) =>
+      movie(200 + index, `Rated Movie ${index}`, [fact(200 + index, "tone", "tense")], [{ id: 18, name: "Drama" }])
+    );
+    const obscureCandidates = Array.from({ length: 10 }, (_, index) => ({
+      ...movie(300 + index, `Obscure Gem ${index}`, [fact(300 + index, "tone", "tense")], [{ id: 18, name: "Drama" }]),
+      voteCount: 2000,
+      voteAverage: 8.5
+    }));
+    const familiarCandidates = Array.from({ length: 10 }, (_, index) => ({
+      ...movie(400 + index, `Familiar Hit ${index}`, [fact(400 + index, "tone", "tense")], [{ id: 18, name: "Drama" }]),
+      voteCount: 20000,
+      voteAverage: 7.0
+    }));
+    const ratings = ratedMovies.map((rated, index) => rating(rated.tmdbId, index < 4 ? "like" : "dislike"));
+
+    const store = {
+      listMovies: vi.fn(async () => [...ratedMovies, ...obscureCandidates, ...familiarCandidates]),
+      listRatings: vi.fn(async () => ratings),
+      listRatingReasons: vi.fn(async () => []),
+      listRatingTraitReasons: vi.fn(async () => []),
+      listExposures: vi.fn(async () => []),
+      listAppealSignals: vi.fn(async () => []),
+      listWatchlist: vi.fn(async () => []),
+      listHiddenRecommendations: vi.fn(async () => []),
+      listMovieEmbeddings: vi.fn(async () => []),
+      matchMovieEmbeddings: vi.fn(async () => []),
+      logExposure: vi.fn(async () => undefined),
+      saveRecommendationRun: vi.fn(
+        async (input: { items: Array<Record<string, unknown>>; metadata: Record<string, unknown>; [key: string]: unknown }) => {
+          const items = input.items.map((item, index) => ({
+            ...item,
+            id: `item-${index}`,
+            runId: "run-1",
+            profileId: "default",
+            createdAt: "2026-01-01T00:00:00.000Z"
+          })) as unknown as RecommendationItem[];
+          return {
+            id: "run-1",
+            profileId: "default",
+            promptVersion: String(input.promptVersion),
+            scoringVersion: String(input.scoringVersion),
+            status: input.status,
+            baselineAverage: null,
+            recommendationAverage: null,
+            metadata: input.metadata ?? {},
+            createdAt: "2026-01-01T00:00:00.000Z",
+            items
+          } as RecommendationRun;
+        }
+      )
+    } as unknown as MovieStore;
+
+    const result = await generateRecommendations(store, "default", 10);
+    expect(result.ready).toBe(true);
+    expect(result.recommendations.length).toBe(10);
+
+    const obscureCount = result.recommendations.filter((item) => item.movie.voteCount < 3000).length;
+    expect(obscureCount).toBeLessThanOrEqual(2);
+  });
+});
+
 describe("generateRecommendations genre filter", () => {
   const ACTION = { id: 28, name: "Action" };
   const DRAMA = { id: 18, name: "Drama" };

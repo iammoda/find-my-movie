@@ -22,7 +22,7 @@ export const RUNTIME_STARTER_POOL_MOVIES = 900;
 
 // Recommendation scoring: soft floors replace the old hard candidate gates.
 export const MIN_RECOMMENDATION_VOTE_AVERAGE = 7;
-export const MIN_CANDIDATE_VOTE_COUNT = 50;
+export const MIN_CANDIDATE_VOTE_COUNT = 300;
 export const NON_PRIMARY_LANGUAGE_PENALTY = 0.6;
 
 export const RATING_WEIGHTS: Record<RatingValue, number> = {

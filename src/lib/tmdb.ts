@@ -397,9 +397,12 @@ const MAX_DISCOVER_PAGE = 460;
 const EXPANSION_PAGES_PER_SLICE = 6;
 
 /**
- * Deeper discover pages for catalog growth once the starter pool is spent.
- * `pageOffset` advances the read window per slice so successive expansions
- * keep ingesting movies the catalog has not seen yet (upserts dedupe overlap).
+ * Catalog growth aimed at the popular head, not the deep tail. Swipe data
+ * shows "haven't seen" deck cards are mid-popular rather than low-vote, so
+ * expansion ingests the most widely known movies the catalog lacks: the
+ * all-time most-voted titles, the currently-popular well-known titles, and
+ * recent releases with real vote mass. `pageOffset` advances the read window
+ * per slice so successive expansions keep finding new movies (upserts dedupe).
  */
 export async function fetchCatalogExpansion(pageOffset: number, target = 400): Promise<Movie[]> {
   if (!tmdbConfigured()) return [];
@@ -413,11 +416,21 @@ export async function fetchCatalogExpansion(pageOffset: number, target = 400): P
     "primary_release_date.lte": isoDateDaysAgo(MIN_STABLE_RELEASE_DAYS)
   };
 
-  // baseStart skips the windows the starter pool already ingested.
   const slices: Array<{ baseStart: number; params: Record<string, string | number | boolean | undefined> }> = [
-    { baseStart: 26, params: { ...baseParams, sort_by: "popularity.desc", "vote_count.gte": 150 } },
-    { baseStart: 26, params: { ...baseParams, sort_by: "vote_average.desc", "vote_count.gte": 300 } },
-    { baseStart: 1, params: { ...baseParams, sort_by: "vote_count.desc", "vote_count.gte": 150 } }
+    // Most-voted of all time = the movies most people have actually heard of.
+    { baseStart: 1, params: { ...baseParams, sort_by: "vote_count.desc", "vote_count.gte": 3000 } },
+    // Currently popular with real vote mass: familiar titles in circulation now.
+    { baseStart: 1, params: { ...baseParams, sort_by: "popularity.desc", "vote_count.gte": 1000 } },
+    // Recent well-known releases (the familiar pool skews older as it drains).
+    {
+      baseStart: 1,
+      params: {
+        ...baseParams,
+        sort_by: "popularity.desc",
+        "vote_count.gte": 500,
+        "primary_release_date.gte": isoDateDaysAgo(365 * 2)
+      }
+    }
   ];
 
   try {

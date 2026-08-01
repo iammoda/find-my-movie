@@ -1077,6 +1077,56 @@ a {
   margin-top: 14px;
 }
 
+.diagnostics-panel {
+  margin-top: 12px;
+  border: 1px solid rgba(147, 143, 158, 0.18);
+  border-radius: var(--radius-list);
+  background: var(--surface-container-high);
+}
+
+.diagnostics-toggle {
+  display: block;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+  text-align: left;
+}
+
+.diagnostics-toggle:hover {
+  color: var(--ink);
+}
+
+.diagnostics-body {
+  padding: 0 14px 12px;
+}
+
+.diagnostics-grid {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+}
+
+.diagnostics-grid dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.diagnostics-grid dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.diagnostics-grid dd .muted {
+  font-size: 12px;
+  font-weight: 400;
+}
+
 .recommendation-controls {
   display: flex;
   flex-wrap: wrap;

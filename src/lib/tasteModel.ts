@@ -423,6 +423,46 @@ export function predictedRankScore(prediction: TastePrediction): number {
   return Math.max(0, Math.min(10, prediction.score * 5 + 5));
 }
 
+const MAX_UNCERTAINTY_ANCHORS = 64;
+
+/**
+ * Cheap GP-style predictive-uncertainty proxy: posterior variance is low near
+ * training points and high far from all of them, so we estimate uncertainty as
+ * 1 - max cosine similarity to the rated-movie embeddings. Exact dual-form
+ * variance (k(x)^T (K+lambda I)^-1 k(x)) needs the full training design at
+ * predict time - hundreds of times the cost per candidate - while this proxy
+ * preserves the property active learning needs: rating a movie collapses the
+ * uncertainty of everything similar to it.
+ */
+export function buildUncertaintyEstimator(anchorEmbeddings: number[][]): (embedding: number[] | null | undefined) => number {
+  const anchors: Array<{ vector: number[]; norm: number }> = [];
+  for (const vector of anchorEmbeddings.slice(0, MAX_UNCERTAINTY_ANCHORS)) {
+    if (!vector?.length) continue;
+    let norm = 0;
+    for (const value of vector) norm += value * value;
+    norm = Math.sqrt(norm);
+    if (norm > 1e-9) anchors.push({ vector, norm });
+  }
+
+  return (embedding: number[] | null | undefined) => {
+    if (!embedding?.length || !anchors.length) return 1;
+    let embeddingNorm = 0;
+    for (const value of embedding) embeddingNorm += value * value;
+    embeddingNorm = Math.sqrt(embeddingNorm);
+    if (embeddingNorm < 1e-9) return 1;
+
+    let maxSimilarity = 0;
+    for (const anchor of anchors) {
+      const limit = Math.min(anchor.vector.length, embedding.length);
+      let dot = 0;
+      for (let d = 0; d < limit; d += 1) dot += anchor.vector[d] * embedding[d];
+      const similarity = dot / (anchor.norm * embeddingNorm);
+      if (similarity > maxSimilarity) maxSimilarity = similarity;
+    }
+    return Math.max(0, Math.min(1, 1 - maxSimilarity));
+  };
+}
+
 export type ScoreCalibrator = (rawRankScore: number) => number;
 
 const MIN_CALIBRATION_SAMPLES = 20;

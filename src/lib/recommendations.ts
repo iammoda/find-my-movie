@@ -404,6 +404,20 @@ function candidateUsable(movie: Movie) {
 }
 
 /**
+ * Familiarity (0-1): how likely the user is to recognize this title, from vote
+ * mass and current popularity. Weighted meaningfully into both scoring paths -
+ * recommendations of movies nobody has heard of erode trust even when the
+ * taste match is real.
+ */
+const FAMILIARITY_WEIGHT = 0.9;
+
+function familiarityScore(movie: Movie): number {
+  const voteReach = Math.min(1, Math.log10(1 + Math.max(0, movie.voteCount)) / 4);
+  const popularityReach = Math.min(1, Math.log10(1 + Math.max(0, movie.popularity)) / 3);
+  return voteReach * 0.6 + popularityReach * 0.4;
+}
+
+/**
  * Soft penalty (subtracted from a candidate's score) that replaces the old hard filters.
  * Lets the learned model override it, but keeps low-credibility / off-language / very
  * fresh titles from dominating on thin evidence.
@@ -539,8 +553,9 @@ export function scoreMovieCandidate(movie: Movie, profile: TasteProfile, exposed
   }
 
   const qScore = qualityScore(movie);
-  const pScore = Math.min(1, Math.log10(Math.max(1, movie.popularity)) / 3);
+  const familiarity = familiarityScore(movie);
   const noveltyScore = exposedIds.has(movie.tmdbId) ? -0.08 : 0.12;
+  const softPenalty = candidateSoftPenalty(movie);
   const base = baselineScore(movie);
   const taxonomyPositiveScore = Math.log1p(taxonomyPositiveRaw) * 2.1;
   const taxonomyNegativePenalty = Math.log1p(taxonomyNegativeRaw + conflictTraitPenalty) * 2.6 + hardNegativePenalty;
@@ -555,16 +570,16 @@ export function scoreMovieCandidate(movie: Movie, profile: TasteProfile, exposed
     fallbackPositiveScore -
     fallbackNegativePenalty +
     qScore * 0.75 +
-    pScore * 0.15 +
-    noveltyScore +
-    0;
+    familiarity * FAMILIARITY_WEIGHT +
+    noveltyScore -
+    softPenalty;
 
   const breakdown: RecommendationScoreBreakdown = {
     positiveTraitScore: Number((taxonomyPositiveScore + fallbackPositiveScore).toFixed(4)),
     negativeTraitPenalty: Number((taxonomyNegativePenalty + fallbackNegativePenalty).toFixed(4)),
     embeddingSimilarityScore: Number(embeddingSimilarityScore.toFixed(4)),
     qualityScore: Number(qScore.toFixed(4)),
-    popularityScore: Number(pScore.toFixed(4)),
+    popularityScore: Number(familiarity.toFixed(4)),
     noveltyScore,
     diversityPenalty: 0,
     topTraits: topTraits
@@ -671,6 +686,10 @@ export function semanticContextForMovie(
   };
 }
 
+/** Familiarity guarantee: at most this many picks per run below the vote threshold. */
+const OBSCURE_VOTE_THRESHOLD = 3000;
+const MAX_OBSCURE_PICKS = 2;
+
 function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandidate[] {
   const selected: ScoredCandidate[] = [];
   const genreCounts = new Map<string, number>();
@@ -704,7 +723,28 @@ function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandida
     if (selected.length >= limit * 2) break;
   }
 
-  return selected.sort((a, b) => b.score - a.score).slice(0, limit);
+  // Constrained pick: at most MAX_OBSCURE_PICKS low-vote titles per run so the
+  // list reads as recognizable; skipped obscure picks only backfill when the
+  // familiar supply is exhausted.
+  const ranked = selected.sort((a, b) => b.score - a.score);
+  const final: ScoredCandidate[] = [];
+  const skippedObscure: ScoredCandidate[] = [];
+  let obscureCount = 0;
+  for (const candidate of ranked) {
+    if (final.length >= limit) break;
+    const obscure = candidate.movie.voteCount < OBSCURE_VOTE_THRESHOLD;
+    if (obscure && obscureCount >= MAX_OBSCURE_PICKS) {
+      skippedObscure.push(candidate);
+      continue;
+    }
+    if (obscure) obscureCount += 1;
+    final.push(candidate);
+  }
+  for (const candidate of skippedObscure) {
+    if (final.length >= limit) break;
+    final.push(candidate);
+  }
+  return final;
 }
 
 function averageRatedScoreForSource(ratings: Rating[], movieIds: number[]) {
@@ -766,11 +806,11 @@ export function scoreCandidateWithModel(
 ): ScoredCandidate {
   const prediction = predictTasteScore(model, embedding, movie);
   const qScore = qualityScore(movie);
-  const pScore = Math.min(1, Math.log10(Math.max(1, movie.popularity)) / 3);
+  const familiarity = familiarityScore(movie);
   const noveltyScore = exposedIds.has(movie.tmdbId) ? -0.08 : 0.12;
   const softPenalty = candidateSoftPenalty(movie);
   const modelScore = prediction.score * MODEL_SCORE_WEIGHT;
-  const score = modelScore + qScore * 0.75 + pScore * 0.15 + noveltyScore - softPenalty;
+  const score = modelScore + qScore * 0.75 + familiarity * FAMILIARITY_WEIGHT + noveltyScore - softPenalty;
   const nearest = nearestLovedTitles(embedding, lovedContexts);
   const rawRankScore = predictedRankScore(prediction);
   const displayRankScore = calibrate ? calibrate(rawRankScore) : rawRankScore;
@@ -780,7 +820,7 @@ export function scoreCandidateWithModel(
     negativeTraitPenalty: Number(prediction.traitNegativeTotal.toFixed(4)),
     embeddingSimilarityScore: Number(prediction.embeddingScore.toFixed(4)),
     qualityScore: Number(qScore.toFixed(4)),
-    popularityScore: Number(pScore.toFixed(4)),
+    popularityScore: Number(familiarity.toFixed(4)),
     noveltyScore,
     diversityPenalty: 0,
     topTraits: prediction.topTraits.map((trait) => trait.label),

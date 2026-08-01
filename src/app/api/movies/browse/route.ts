@@ -15,7 +15,7 @@ import { publicMovie } from "@/lib/publicMovie";
 import { isReleasedAtLeastDaysAgo, mainstreamScore } from "@/lib/quality";
 import { VERDICT_BANDS } from "@/lib/ranking";
 import { type MovieStore } from "@/lib/store";
-import { loadTasteModel, predictTasteScore, predictedRankScore } from "@/lib/tasteModel";
+import { buildUncertaintyEstimator, loadTasteModel, predictTasteScore, predictedRankScore } from "@/lib/tasteModel";
 import { buildTasteTestQueue, usableTasteTestMovie, type TasteTestQueueOptions } from "@/lib/tasteTest";
 import { fetchBrowseMovies, fetchCatalogExpansion, fetchStarterPool } from "@/lib/tmdb";
 import type { AppealSignal, Movie, MovieExposure, Rating, WatchlistItem } from "@/lib/types";
@@ -29,7 +29,7 @@ const querySchema = z.object({
 });
 
 /** Cap the embedding fetch for deck predictions; listMovies is popularity-sorted. */
-const MAX_PREDICTION_CANDIDATES = 400;
+const MAX_PREDICTION_CANDIDATES = 1200;
 const LOVED_ANCHOR_COUNT = 5;
 const NEIGHBORHOOD_MATCHES_PER_ANCHOR = 40;
 
@@ -95,13 +95,14 @@ async function deckModelSignals(
   exposures: MovieExposure[],
   appealSignals: AppealSignal[],
   watchlist: WatchlistItem[]
-): Promise<Pick<TasteTestQueueOptions, "predictions" | "neighborhoodSimilarity" | "modelRatingSampleCount">> {
+): Promise<Pick<TasteTestQueueOptions, "predictions" | "neighborhoodSimilarity" | "uncertainty" | "modelRatingSampleCount">> {
   const predictions = new Map<number, number>();
   const neighborhoodSimilarity = new Map<number, number>();
+  const uncertainty = new Map<number, number>();
   let modelRatingSampleCount = 0;
   try {
     const { model, signalEmbeddingsById } = await loadTasteModel(store, { movies, ratings, exposures, appealSignals, watchlist });
-    if (!model) return { predictions, neighborhoodSimilarity, modelRatingSampleCount };
+    if (!model) return { predictions, neighborhoodSimilarity, uncertainty, modelRatingSampleCount };
     modelRatingSampleCount = model.ratingSampleCount;
 
     const handledIds = handledMovieIds(ratings, exposures, appealSignals);
@@ -111,10 +112,17 @@ async function deckModelSignals(
 
     if (candidates.length) {
       const embeddingById = await candidateEmbeddings(store, candidates.map((movie) => movie.tmdbId));
+      // Uncertainty anchors: the most decisive rated embeddings first.
+      const anchorVectors = [...ratings]
+        .sort((a, b) => Math.abs((b.rankScore ?? 5) - 5) - Math.abs((a.rankScore ?? 5) - 5))
+        .map((rating) => signalEmbeddingsById.get(rating.tmdbId))
+        .filter((vector): vector is number[] => Boolean(vector?.length));
+      const estimateUncertainty = buildUncertaintyEstimator(anchorVectors);
       for (const movie of candidates) {
         const embedding = embeddingById.get(movie.tmdbId);
         if (!embedding?.length) continue; // trait-only predictions are too weak to probe with
         predictions.set(movie.tmdbId, predictedRankScore(predictTasteScore(model, embedding, movie)));
+        if (anchorVectors.length) uncertainty.set(movie.tmdbId, estimateUncertainty(embedding));
       }
     }
 
@@ -138,7 +146,7 @@ async function deckModelSignals(
   } catch (error) {
     console.warn("Deck taste signals unavailable", error instanceof Error ? error.message : error);
   }
-  return { predictions, neighborhoodSimilarity, modelRatingSampleCount };
+  return { predictions, neighborhoodSimilarity, uncertainty, modelRatingSampleCount };
 }
 
 export async function GET(request: Request) {

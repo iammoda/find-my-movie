@@ -148,6 +148,49 @@ describe("taste test queue", () => {
     expect(ids).toContain(12);
   });
 
+  it("pulls high-uncertainty movies forward through the explore probes", () => {
+    // The uncertain movie sits at the bottom of the coverage order (lowest
+    // contrast score); the explore bucket is the only way it can move up.
+    const movies = [
+      ...Array.from({ length: 20 }, (_, i) => movie(100 + i, `Popular Filler ${i}`, { voteCount: 20000, popularity: 90 })),
+      movie(999, "Uncertain Outlier", { voteCount: 600, popularity: 9 })
+    ];
+    const predictions = new Map<number, number>(movies.map((item) => [item.tmdbId, 5.0]));
+    const uncertainty = new Map<number, number>([[999, 0.95]]);
+
+    const withExplore = buildTasteTestQueue(movies, [], [], 10, {
+      predictions,
+      uncertainty,
+      modelRatingSampleCount: FULL_CONFIDENCE
+    });
+    const withoutExplore = buildTasteTestQueue(movies, [], [], 10, {
+      predictions,
+      modelRatingSampleCount: FULL_CONFIDENCE
+    });
+
+    const rankWith = withExplore.findIndex((item) => item.tmdbId === 999);
+    const rankWithout = withoutExplore.findIndex((item) => item.tmdbId === 999);
+    expect(rankWith).toBeGreaterThanOrEqual(0);
+    expect(rankWithout === -1 || rankWith < rankWithout).toBe(true);
+  });
+
+  it("exploits harder than it covers once the model is confident", () => {
+    const probeIds = Array.from({ length: 60 }, (_, i) => 1000 + i);
+    const fillerIds = Array.from({ length: 100 }, (_, i) => 2000 + i);
+    const movies = [
+      ...probeIds.map((id) => movie(id, `Probe ${id}`)),
+      ...fillerIds.map((id) => movie(id, `Filler ${id}`))
+    ];
+    // Spread probes across hit and frontier buckets so probe supply exceeds caps.
+    const predictions = new Map<number, number>(probeIds.map((id, index) => [id, index % 2 === 0 ? 8 : 6.5]));
+
+    const queue = buildTasteTestQueue(movies, [], [], 60, { predictions, modelRatingSampleCount: FULL_CONFIDENCE });
+    const probeCount = queue.filter((item) => probeIds.includes(item.tmdbId)).length;
+
+    // Exploit share is 0.8 at full confidence; the deck should be mostly probes.
+    expect(probeCount).toBeGreaterThanOrEqual(30);
+  });
+
   it("orders frontier probes by closeness to the frontier peak", () => {
     const movies = [movie(1, "Near Peak"), movie(2, "Far From Peak"), ...[3, 4, 5].map((id) => movie(id, `Filler ${id}`))];
     const predictions = new Map<number, number>([
@@ -169,24 +212,30 @@ describe("taste test queue", () => {
     expect(queue.map((item) => item.tmdbId).sort()).toEqual([1, 2, 3]);
   });
 
-  it("relaxes quality floors when the strict pool is exhausted", () => {
+  it("relaxes quality floors when the strict pool is exhausted, but never below the vote floor", () => {
     // Strict floors require 500+ votes, 6.25+ average, 8+ popularity.
+    // Relaxed floors widen quality/popularity (6.0+ average, 5+ popularity)
+    // but keep the 500-vote floor: low-vote titles are unratable obscurities.
     const midTier = Array.from({ length: 12 }, (_, i) =>
-      movie(300 + i, `Mid Tier ${i}`, { voteCount: 250, voteAverage: 6.0, popularity: 5 })
+      movie(300 + i, `Mid Tier ${i}`, { voteCount: 800, voteAverage: 6.0, popularity: 5 })
+    );
+    const deepCatalog = Array.from({ length: 6 }, (_, i) =>
+      movie(500 + i, `Deep Catalog ${i}`, { voteCount: 250, voteAverage: 6.9, popularity: 6 })
     );
     const strictOnly = [movie(1, "Mainstream Hit")];
 
-    const queue = buildTasteTestQueue([...strictOnly, ...midTier], [], [], 12);
+    const queue = buildTasteTestQueue([...strictOnly, ...midTier, ...deepCatalog], [], [], 12);
     const ids = queue.map((item) => item.tmdbId);
 
     expect(ids).toContain(1);
-    expect(ids.filter((id) => id >= 300).length).toBeGreaterThanOrEqual(10);
+    expect(ids.filter((id) => id >= 300 && id < 500).length).toBeGreaterThanOrEqual(10);
+    expect(ids.filter((id) => id >= 500).length).toBe(0);
   });
 
   it("keeps the strict queue when it already fills the deck", () => {
     const strict = Array.from({ length: 12 }, (_, i) => movie(i + 1, `Strict ${i}`));
     const midTier = Array.from({ length: 5 }, (_, i) =>
-      movie(300 + i, `Mid Tier ${i}`, { voteCount: 250, voteAverage: 6.0, popularity: 5 })
+      movie(300 + i, `Mid Tier ${i}`, { voteCount: 800, voteAverage: 6.0, popularity: 5 })
     );
 
     const queue = buildTasteTestQueue([...strict, ...midTier], [], [], 12);
