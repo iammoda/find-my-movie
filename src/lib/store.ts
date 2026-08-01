@@ -3,6 +3,7 @@ import path from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { DEFAULT_PROFILE_ID, ANONYMOUS_PROFILE_ID, MAX_STARTER_POOL_MOVIES } from "@/lib/constants";
 import { FALLBACK_MOVIES } from "@/lib/data/fallbackMovies";
+import { friendDisplayName } from "@/lib/displayName";
 import { deriveTasteFacts } from "@/lib/taste";
 import type {
   AppealSignal,
@@ -717,7 +718,12 @@ class LocalJsonStore implements MovieStore {
       .filter((row) => row.profileA === profileId || row.profileB === profileId)
       .map((row) => {
         const friendId = row.profileA === profileId ? row.profileB : row.profileA;
-        return { profileId: friendId, displayName: profileById.get(friendId)?.displayName ?? null, createdAt: row.createdAt };
+        const profile = profileById.get(friendId);
+        return {
+          profileId: friendId,
+          displayName: friendDisplayName(profile?.displayName, profile?.email),
+          createdAt: row.createdAt
+        };
       });
   }
 
@@ -1670,10 +1676,15 @@ class SupabaseMovieStore implements MovieStore {
     if (!friendIds.length) return [];
     const { data: profiles, error: profileError } = await this.db
       .from("profiles")
-      .select("id, display_name")
+      .select("id, display_name, email")
       .in("id", friendIds);
     if (profileError) throw profileError;
-    const nameById = new Map((profiles ?? []).map((profile) => [profile.id as string, (profile.display_name as string | null) ?? null]));
+    const nameById = new Map(
+      (profiles ?? []).map((profile) => [
+        profile.id as string,
+        friendDisplayName((profile.display_name as string | null) ?? null, (profile.email as string | null) ?? null)
+      ])
+    );
     return rows.map((row) => {
       const friendId = row.profile_a === profileId ? row.profile_b : row.profile_a;
       return { profileId: friendId, displayName: nameById.get(friendId) ?? null, createdAt: row.created_at };

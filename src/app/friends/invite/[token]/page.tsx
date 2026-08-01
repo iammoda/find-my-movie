@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { accountsEnabled, getSessionProfileId } from "@/lib/auth";
+import { friendDisplayName } from "@/lib/displayName";
 import { getStore } from "@/lib/store";
 import { AcceptInviteButton } from "@/components/AcceptInviteButton";
 
@@ -43,7 +44,7 @@ export default async function InvitePage(props: { params: Promise<{ token: strin
   }
 
   const inviter = await store.getProfile(invite.inviterProfileId);
-  const inviterName = inviter?.displayName ?? "A Find My Movie user";
+  const inviterName = friendDisplayName(inviter?.displayName, inviter?.email) ?? "A Find My Movie user";
   const sessionProfileId = await getSessionProfileId();
   const nextParam = encodeURIComponent(`/friends/invite/${token}`);
 

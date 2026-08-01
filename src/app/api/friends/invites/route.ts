@@ -7,23 +7,24 @@ function inviteUrl(request: Request, token: string) {
   return `${new URL(request.url).origin}/friends/invite/${token}`;
 }
 
+/**
+ * Create an invite link. One active link per user: creating a new one
+ * replaces (deletes) any previous invites, which also cleans up expired rows.
+ * There is deliberately no GET: a link is shown once at creation, like a
+ * password reset link, and never listed again.
+ */
 export async function POST(request: Request) {
   if (!accountsEnabled()) return NextResponse.json({ error: "Accounts are not enabled" }, { status: 404 });
   const store = await getSessionStore();
   if (!store) return unauthorized();
+
+  const existing = await store.listFriendInvites();
+  for (const invite of existing) {
+    await store.deleteFriendInvite(invite.token);
+  }
+
   const invite = await store.createFriendInvite();
   return NextResponse.json({ invite, url: inviteUrl(request, invite.token) });
-}
-
-export async function GET(request: Request) {
-  if (!accountsEnabled()) return NextResponse.json({ error: "Accounts are not enabled" }, { status: 404 });
-  const store = await getSessionStore();
-  if (!store) return unauthorized();
-  const now = Date.now();
-  const invites = (await store.listFriendInvites()).filter((invite) => new Date(invite.expiresAt).getTime() > now);
-  return NextResponse.json({
-    invites: invites.map((invite) => ({ ...invite, url: inviteUrl(request, invite.token) }))
-  });
 }
 
 export async function DELETE(request: Request) {

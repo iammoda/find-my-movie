@@ -40,7 +40,8 @@ export function FriendsPanel() {
   const [nameDraft, setNameDraft] = useState("");
   const [nameSaving, setNameSaving] = useState(false);
   const [friends, setFriends] = useState<Friend[]>([]);
-  const [invites, setInvites] = useState<InviteWithUrl[]>([]);
+  // Shown once, right after creation - links are never listed again.
+  const [invite, setInvite] = useState<InviteWithUrl | null>(null);
   const [inviteBusy, setInviteBusy] = useState(false);
   const [copiedToken, setCopiedToken] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -51,10 +52,9 @@ export function FriendsPanel() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [profileRes, friendsRes, invitesRes] = await Promise.all([
+      const [profileRes, friendsRes] = await Promise.all([
         fetch("/api/profile", { cache: "no-store" }),
-        fetch("/api/friends", { cache: "no-store" }),
-        fetch("/api/friends/invites", { cache: "no-store" })
+        fetch("/api/friends", { cache: "no-store" })
       ]);
       if (profileRes.ok) {
         const data = (await profileRes.json()) as { profile: Profile | null };
@@ -62,7 +62,6 @@ export function FriendsPanel() {
         setNameDraft(data.profile?.displayName ?? "");
       }
       if (friendsRes.ok) setFriends(((await friendsRes.json()) as { friends: Friend[] }).friends);
-      if (invitesRes.ok) setInvites(((await invitesRes.json()) as { invites: InviteWithUrl[] }).invites);
     } finally {
       setLoading(false);
     }
@@ -99,8 +98,7 @@ export function FriendsPanel() {
       const response = await fetch("/api/friends/invites", { method: "POST" });
       if (!response.ok) return;
       const data = (await response.json()) as { invite: FriendInvite; url: string };
-      const withUrl: InviteWithUrl = { ...data.invite, url: data.url };
-      setInvites((current) => [withUrl, ...current]);
+      setInvite({ ...data.invite, url: data.url });
       try {
         await navigator.clipboard.writeText(data.url);
         setCopiedToken(data.invite.token);
@@ -113,10 +111,10 @@ export function FriendsPanel() {
     }
   }, [inviteBusy]);
 
-  const copyInvite = useCallback(async (invite: InviteWithUrl) => {
+  const copyInvite = useCallback(async (current: InviteWithUrl) => {
     try {
-      await navigator.clipboard.writeText(invite.url);
-      setCopiedToken(invite.token);
+      await navigator.clipboard.writeText(current.url);
+      setCopiedToken(current.token);
       setTimeout(() => setCopiedToken(null), 2500);
     } catch {
       // Ignore; user can copy manually from the visible URL.
@@ -125,7 +123,7 @@ export function FriendsPanel() {
 
   const revokeInvite = useCallback(async (token: string) => {
     await fetch(`/api/friends/invites?token=${encodeURIComponent(token)}`, { method: "DELETE" });
-    setInvites((current) => current.filter((invite) => invite.token !== token));
+    setInvite((current) => (current?.token === token ? null : current));
   }, []);
 
   const toggleCommon = useCallback(
@@ -189,25 +187,26 @@ export function FriendsPanel() {
 
       <div className="friends-card">
         <h3>Invite a friend</h3>
-        <p className="friends-card-copy">Links are shareable for 7 days. Anyone who accepts becomes a friend.</p>
+        <p className="friends-card-copy">
+          One link at a time - creating a new one replaces the old. Links expire after 7 days, and whoever signs up or
+          signs in through yours becomes a friend automatically.
+        </p>
         <button type="button" className="secondary-button" onClick={() => void createInvite()} disabled={inviteBusy}>
-          <LinkIcon size={16} /> Create invite link
+          <LinkIcon size={16} /> {invite ? "Create new link" : "Create invite link"}
         </button>
-        {invites.length > 0 && (
+        {invite && (
           <ul className="friends-invite-list">
-            {invites.map((invite) => (
-              <li key={invite.token}>
-                <span className="friends-invite-url" title={invite.url}>
-                  {invite.url}
-                </span>
-                <button type="button" className="icon-chip" onClick={() => void copyInvite(invite)} aria-label="Copy invite link">
-                  {copiedToken === invite.token ? <Check size={15} /> : <Copy size={15} />}
-                </button>
-                <button type="button" className="icon-chip" onClick={() => void revokeInvite(invite.token)} aria-label="Revoke invite">
-                  <Trash2 size={15} />
-                </button>
-              </li>
-            ))}
+            <li key={invite.token}>
+              <span className="friends-invite-url" title={invite.url}>
+                {invite.url}
+              </span>
+              <button type="button" className="icon-chip" onClick={() => void copyInvite(invite)} aria-label="Copy invite link">
+                {copiedToken === invite.token ? <Check size={15} /> : <Copy size={15} />}
+              </button>
+              <button type="button" className="icon-chip" onClick={() => void revokeInvite(invite.token)} aria-label="Revoke invite">
+                <Trash2 size={15} />
+              </button>
+            </li>
           </ul>
         )}
       </div>

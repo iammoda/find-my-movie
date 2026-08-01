@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { commonTaste, isPositiveRating } from "@/lib/friends";
+import { describe, expect, it, vi } from "vitest";
+import { friendDisplayName } from "@/lib/displayName";
+import { acceptFriendInvite, commonTaste, isPositiveRating } from "@/lib/friends";
+import type { MovieStore } from "@/lib/store";
 import type { Rating, WatchlistItem } from "@/lib/types";
 
 function rating(tmdbId: number, overrides: Partial<Rating> = {}): Rating {
@@ -69,5 +71,52 @@ describe("commonTaste", () => {
     ];
     const result = commonTaste(own, friend, ownList, []);
     expect(result.friendLovedUnseenTmdbIds).toEqual([5, 4]);
+  });
+});
+
+describe("friendDisplayName", () => {
+  it("prefers the explicit display name", () => {
+    expect(friendDisplayName("Yoda", "mgounder@example.com")).toBe("Yoda");
+  });
+
+  it("falls back to the email prefix, never the full address", () => {
+    expect(friendDisplayName(null, "mgounder@example.com")).toBe("mgounder");
+    expect(friendDisplayName("  ", "mgounder@example.com")).toBe("mgounder");
+  });
+
+  it("returns null when neither is available", () => {
+    expect(friendDisplayName(null, null)).toBeNull();
+    expect(friendDisplayName("", "")).toBeNull();
+  });
+});
+
+describe("acceptFriendInvite", () => {
+  function mockStore(invite: { token: string; inviterProfileId: string; expiresAt: string } | null) {
+    return {
+      getFriendInvite: vi.fn(async () => (invite ? { ...invite, createdAt: "2026-01-01T00:00:00.000Z" } : null)),
+      addFriendship: vi.fn(async () => undefined)
+    } as unknown as MovieStore & { addFriendship: ReturnType<typeof vi.fn> };
+  }
+
+  const future = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const past = new Date(Date.now() - 1000).toISOString();
+
+  it("creates the friendship for a valid invite", async () => {
+    const store = mockStore({ token: "t1", inviterProfileId: "inviter", expiresAt: future });
+    const result = await acceptFriendInvite(store, "acceptor", "t1");
+    expect(result).toEqual({ ok: true, inviterProfileId: "inviter" });
+    expect(store.addFriendship).toHaveBeenCalledWith("inviter", "inviter");
+  });
+
+  it("rejects unknown, expired, and self invites without creating friendships", async () => {
+    expect(await acceptFriendInvite(mockStore(null), "acceptor", "missing")).toEqual({ ok: false, reason: "not_found" });
+
+    const expiredStore = mockStore({ token: "t2", inviterProfileId: "inviter", expiresAt: past });
+    expect(await acceptFriendInvite(expiredStore, "acceptor", "t2")).toEqual({ ok: false, reason: "expired" });
+    expect(expiredStore.addFriendship).not.toHaveBeenCalled();
+
+    const selfStore = mockStore({ token: "t3", inviterProfileId: "me", expiresAt: future });
+    expect(await acceptFriendInvite(selfStore, "me", "t3")).toEqual({ ok: false, reason: "self" });
+    expect(selfStore.addFriendship).not.toHaveBeenCalled();
   });
 });

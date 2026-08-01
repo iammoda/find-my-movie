@@ -14,6 +14,22 @@ export function isPositiveRating(rating: Rating): boolean {
   return rating.verdict === "loved" || POSITIVE_RATINGS.has(rating.rating);
 }
 
+export type InviteAcceptance = { ok: true; inviterProfileId: string } | { ok: false; reason: "not_found" | "expired" | "self" };
+
+/**
+ * Validate and accept a friend invite for the session profile. Shared by the
+ * explicit Accept button and the automatic post-signup/login cookie handoff.
+ * Idempotent: re-accepting an existing friendship is a no-op upsert.
+ */
+export async function acceptFriendInvite(store: MovieStore, profileId: string, token: string): Promise<InviteAcceptance> {
+  const invite = await store.getFriendInvite(token);
+  if (!invite) return { ok: false, reason: "not_found" };
+  if (new Date(invite.expiresAt).getTime() <= Date.now()) return { ok: false, reason: "expired" };
+  if (invite.inviterProfileId === profileId) return { ok: false, reason: "self" };
+  await store.addFriendship(invite.inviterProfileId, invite.inviterProfileId);
+  return { ok: true, inviterProfileId: invite.inviterProfileId };
+}
+
 export interface CommonTasteMovies {
   /** Movies both profiles rated positively, best combined rank first. */
   commonLovedTmdbIds: number[];

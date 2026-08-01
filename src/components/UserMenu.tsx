@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 
-export default function UserMenu({ email }: { email: string | null }) {
+export default function UserMenu({ label }: { label: string | null }) {
   const [busy, setBusy] = useState(false);
 
   async function handleSignOut() {
@@ -18,8 +18,8 @@ export default function UserMenu({ email }: { email: string | null }) {
 
   return (
     <div className="user-menu">
-      <span className="user-menu-email" title={email ?? undefined}>
-        {email ?? "Signed in"}
+      <span className="user-menu-email" title={label ?? undefined}>
+        {label ?? "Signed in"}
       </span>
       <button type="button" className="user-menu-signout" onClick={handleSignOut} disabled={busy}>
         Sign out

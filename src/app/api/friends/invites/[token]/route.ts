@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { accountsEnabled } from "@/lib/auth";
+import { friendDisplayName } from "@/lib/displayName";
 import { getStore } from "@/lib/store";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +20,7 @@ export async function GET(_request: Request, context: { params: Promise<{ token:
   return NextResponse.json({
     invite: {
       token: invite.token,
-      inviterDisplayName: inviter?.displayName ?? "A Find My Movie user",
+      inviterDisplayName: friendDisplayName(inviter?.displayName, inviter?.email) ?? "A Find My Movie user",
       expired
     }
   });

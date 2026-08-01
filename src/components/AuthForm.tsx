@@ -11,6 +11,21 @@ function safeNextPath(raw: string | null): string {
   return "/";
 }
 
+/**
+ * If the visitor opened a friend invite before authenticating, accept it now
+ * (cookie handoff). Returns the destination when a friendship was created.
+ */
+async function consumePendingInvite(): Promise<string | null> {
+  try {
+    const response = await fetch("/api/friends/pending-invite", { method: "POST" });
+    if (!response.ok) return null;
+    const data = (await response.json().catch(() => null)) as { accepted?: boolean } | null;
+    return data?.accepted ? "/friends" : null;
+  } catch {
+    return null;
+  }
+}
+
 export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
   const searchParams = useSearchParams();
   const nextPath = safeNextPath(searchParams.get("next"));
@@ -37,7 +52,7 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
           return;
         }
         // Full navigation so the server-rendered header picks up the session.
-        window.location.assign(nextPath);
+        window.location.assign((await consumePendingInvite()) ?? nextPath);
         return;
       }
 
@@ -57,7 +72,7 @@ export default function AuthForm({ mode }: { mode: "login" | "signup" }) {
         setNotice("Check your email for a confirmation link, then sign in.");
         return;
       }
-      window.location.assign(nextPath);
+      window.location.assign((await consumePendingInvite()) ?? nextPath);
     } finally {
       setBusy(false);
     }

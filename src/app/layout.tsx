@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { accountsEnabled, getSessionUser } from "@/lib/auth";
+import { friendDisplayName } from "@/lib/displayName";
+import { getStore } from "@/lib/store";
 import UserMenu from "@/components/UserMenu";
 import "./globals.css";
 
@@ -12,6 +14,18 @@ export const metadata: Metadata = {
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const authEnabled = accountsEnabled();
   const user = authEnabled ? await getSessionUser() : null;
+
+  // Header label: display name -> email prefix -> raw email.
+  let userLabel: string | null = null;
+  if (user) {
+    let profile = null;
+    try {
+      profile = await getStore().getProfile(user.id);
+    } catch {
+      // Profile lookup is cosmetic; fall back to the email.
+    }
+    userLabel = friendDisplayName(profile?.displayName, user.email) ?? user.email;
+  }
 
   return (
     <html lang="en">
@@ -26,7 +40,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             <Link href="/about">About</Link>
             {authEnabled ? (
               user ? (
-                <UserMenu email={user.email} />
+                <UserMenu label={userLabel} />
               ) : (
                 <Link href="/login" className="top-nav-signin">
                   Sign in

@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { PENDING_INVITE_COOKIE, PENDING_INVITE_MAX_AGE_SECONDS } from "@/lib/pendingInvite";
 
 /** Path prefixes that require a signed-in user when accounts are enabled. */
 const PROTECTED_PREFIXES = ["/taste", "/debug"];
@@ -64,6 +65,20 @@ export async function middleware(request: NextRequest) {
     homeUrl.pathname = "/";
     homeUrl.search = "";
     return NextResponse.redirect(homeUrl);
+  }
+
+  // Invite handoff: remember the token for signed-out visitors so the
+  // friendship is created automatically right after they sign up or log in
+  // (survives the email-confirmation detour, where the ?next= param is lost).
+  const inviteMatch = pathname.match(/^\/friends\/invite\/([^/]+)$/);
+  if (!user && inviteMatch) {
+    response.cookies.set(PENDING_INVITE_COOKIE, inviteMatch[1], {
+      httpOnly: true,
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+      path: "/",
+      maxAge: PENDING_INVITE_MAX_AGE_SECONDS
+    });
   }
 
   return response;
