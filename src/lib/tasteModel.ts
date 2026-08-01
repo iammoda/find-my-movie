@@ -549,7 +549,14 @@ function tasteModelCacheKey(signals: TasteModelSignals): string {
   }
   // Profile id must be part of the key: a warm server serves multiple users.
   const profileId = signals.ratings[0]?.profileId ?? "anon";
-  return [profileId, signals.ratings.length, latestRating, signals.appealSignals.length, signals.watchlist.length].join("|");
+  // Movies-scope fingerprint: how many rated movies the caller's catalog can
+  // actually resolve. A fit against a partial catalog (e.g. one media type)
+  // must never be served to a caller with the full signal set.
+  const movieIds = new Set(signals.movies.map((movie) => movie.tmdbId));
+  const resolvableRatings = signals.ratings.reduce((count, rating) => count + (movieIds.has(rating.tmdbId) ? 1 : 0), 0);
+  return [profileId, signals.ratings.length, resolvableRatings, latestRating, signals.appealSignals.length, signals.watchlist.length].join(
+    "|"
+  );
 }
 
 export async function loadTasteModel(

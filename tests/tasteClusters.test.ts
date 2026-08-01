@@ -51,7 +51,12 @@ describe("taste clusters", () => {
       expect(cluster.size).toBe(6);
       expect(cluster.exemplars.length).toBe(3);
       expect(cluster.label.length).toBeGreaterThan(0);
+      expect(cluster.genres.length).toBeGreaterThan(0);
     }
+    // Theme/genre context is exposed directly (the UI shows genres, not titles).
+    const genreSets = clusters.map((cluster) => cluster.genres.join(" "));
+    expect(genreSets.some((genres) => genres.includes("Crime"))).toBe(true);
+    expect(genreSets.some((genres) => genres.includes("Animation"))).toBe(true);
     const exemplarSets = clusters.map((cluster) => cluster.exemplars.join(" ")); 
     const crimeCluster = exemplarSets.find((titles) => titles.includes("Crime"));
     const animationCluster = exemplarSets.find((titles) => titles.includes("Animation"));

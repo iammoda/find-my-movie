@@ -20,7 +20,7 @@ interface TasteProfileResponse {
   sampleCount: number;
   verdictCounts: { loved: number; fine: number; disliked: number };
   topGenres: string[];
-  clusters: Array<{ label: string; exemplars: string[]; size: number }>;
+  clusters: Array<{ label: string; genres: string[]; size: number }>;
   directors: PersonAffinity[];
   actors: PersonAffinity[];
   drawnTo: string[];
@@ -87,9 +87,18 @@ export function TasteSummaryPanel() {
               <h3>Your loves cluster around</h3>
               <ul className="taste-cluster-list">
                 {data.clusters.map((cluster) => (
-                  <li className="taste-cluster" key={`${cluster.label}-${cluster.exemplars[0] ?? ""}`}>
+                  <li className="taste-cluster" key={cluster.label}>
                     <span className="taste-cluster-label">{cluster.label}</span>
-                    <span className="taste-cluster-movies">{cluster.exemplars.join(" · ")}</span>
+                    <span className="taste-cluster-meta">
+                      {cluster.genres.map((genre) => (
+                        <span className="taste-cluster-genre" key={genre}>
+                          {genre}
+                        </span>
+                      ))}
+                      <span className="taste-cluster-size">
+                        {cluster.size} title{cluster.size === 1 ? "" : "s"}
+                      </span>
+                    </span>
                   </li>
                 ))}
               </ul>

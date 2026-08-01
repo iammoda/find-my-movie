@@ -115,7 +115,8 @@ export async function GET() {
 
   const { model, signalEmbeddingsById } = await loadTasteModel(store, { movies, ratings, exposures, appealSignals, watchlist });
 
-  // Taste clusters: the concrete "movies like these" view of what they love.
+  // Taste clusters: theme/genre regions of what they love (titles stay
+  // internal - the summary reads as taste, not a watch history).
   const loved = lovedRatings(ratings);
   const clusterSamples: LovedMovieSample[] = loved.flatMap((rating) => {
     const movie = byId.get(rating.tmdbId);
@@ -125,7 +126,7 @@ export async function GET() {
   });
   const clusters = buildTasteClusters(clusterSamples, MAX_CLUSTERS).map((cluster) => ({
     label: cluster.label,
-    exemplars: cluster.exemplars,
+    genres: cluster.genres,
     size: cluster.size
   }));
 

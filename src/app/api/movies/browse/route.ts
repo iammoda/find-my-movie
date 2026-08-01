@@ -100,7 +100,24 @@ async function deckModelSignals(
   const uncertainty = new Map<number, number>();
   let modelRatingSampleCount = 0;
   try {
-    const { model, signalEmbeddingsById } = await loadTasteModel(store, { movies, ratings, exposures, appealSignals, watchlist });
+    // The taste model is shared across media: fit it on the user's signal
+    // movies from BOTH catalogs, never on the deck's media-filtered catalog.
+    // (Fitting on the TV catalog silently dropped every movie rating and
+    // produced a 124-sample TV-only model that then leaked through the cache.)
+    const signalIds = new Set<number>([
+      ...ratings.map((rating) => rating.tmdbId),
+      ...appealSignals.map((signal) => signal.tmdbId),
+      ...watchlist.map((item) => item.tmdbId),
+      ...exposures.map((exposure) => exposure.tmdbId)
+    ]);
+    const signalMovies = await store.getMoviesByIds([...signalIds]);
+    const { model, signalEmbeddingsById } = await loadTasteModel(store, {
+      movies: signalMovies,
+      ratings,
+      exposures,
+      appealSignals,
+      watchlist
+    });
     if (!model) return { predictions, neighborhoodSimilarity, uncertainty, modelRatingSampleCount };
     modelRatingSampleCount = model.ratingSampleCount;
 

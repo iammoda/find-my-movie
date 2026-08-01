@@ -141,8 +141,8 @@ export interface MovieStore {
   listHiddenRecommendations(profileId?: string): Promise<number[]>;
   saveRecommendationRun(input: RecommendationRunInput, profileId?: string): Promise<RecommendationRun>;
   listRecommendationRuns(profileId?: string): Promise<RecommendationRun[]>;
-  /** Newest run only, hydrated by item ids - no full-catalog scan. */
-  getLatestRecommendationRun(profileId?: string): Promise<RecommendationRun | null>;
+  /** Newest run for the media type, hydrated by item ids - no full-catalog scan. */
+  getLatestRecommendationRun(profileId?: string, mediaType?: MediaType): Promise<RecommendationRun | null>;
   listWatchlist(profileId?: string): Promise<WatchlistItem[]>;
   upsertWatchlistItem(tmdbId: number, status: WatchlistStatus, profileId?: string): Promise<WatchlistItem>;
   removeWatchlistItem(tmdbId: number, profileId?: string): Promise<void>;
@@ -650,10 +650,16 @@ class LocalJsonStore implements MovieStore {
     return state.recommendationRuns.filter((run) => run.profileId === profileId);
   }
 
-  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID) {
+  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID, mediaType?: MediaType) {
     // Runs are unshifted at save time, so the first match is the newest.
     const state = await this.read();
-    return state.recommendationRuns.find((run) => run.profileId === profileId) ?? null;
+    return (
+      state.recommendationRuns.find(
+        (run) =>
+          run.profileId === profileId &&
+          (mediaType == null || ((run.metadata as { mediaType?: MediaType } | null)?.mediaType ?? "movie") === mediaType)
+      ) ?? null
+    );
   }
 
   async listWatchlist(profileId = DEFAULT_PROFILE_ID) {
@@ -1735,14 +1741,15 @@ class SupabaseMovieStore implements MovieStore {
     );
   }
 
-  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID) {
-    const { data: run, error } = await this.db
-      .from("recommendation_runs")
-      .select("*")
-      .eq("profile_id", profileId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID, mediaType?: MediaType) {
+    let query = this.db.from("recommendation_runs").select("*").eq("profile_id", profileId);
+    if (mediaType === "tv") {
+      query = query.eq("metadata->>mediaType", "tv");
+    } else if (mediaType === "movie") {
+      // Runs saved before TV support carry no mediaType and are movie runs.
+      query = query.or("metadata->>mediaType.eq.movie,metadata->>mediaType.is.null");
+    }
+    const { data: run, error } = await query.order("created_at", { ascending: false }).limit(1).maybeSingle();
     if (error) throw error;
     if (!run) return null;
 

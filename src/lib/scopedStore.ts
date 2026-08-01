@@ -54,7 +54,7 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     listHiddenRecommendations: () => store.listHiddenRecommendations(profileId),
     saveRecommendationRun: (input) => store.saveRecommendationRun(input, profileId),
     listRecommendationRuns: () => store.listRecommendationRuns(profileId),
-    getLatestRecommendationRun: () => store.getLatestRecommendationRun(profileId),
+    getLatestRecommendationRun: (_profileId, mediaType) => store.getLatestRecommendationRun(profileId, mediaType),
     listWatchlist: () => store.listWatchlist(profileId),
     upsertWatchlistItem: (tmdbId, status) => store.upsertWatchlistItem(tmdbId, status, profileId),
     removeWatchlistItem: (tmdbId) => store.removeWatchlistItem(tmdbId, profileId),

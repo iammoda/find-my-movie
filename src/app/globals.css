@@ -78,6 +78,8 @@ a {
 }
 
 .app-shell {
+  --shell-pad-x: clamp(16px, 4vw, 36px);
+  --shell-pad-y: 14px;
   position: sticky;
   top: 0;
   z-index: 20;
@@ -86,7 +88,7 @@ a {
   justify-content: space-between;
   gap: 16px;
   width: 100%;
-  padding: 14px clamp(16px, 4vw, 36px);
+  padding: var(--shell-pad-y) var(--shell-pad-x);
   background: rgba(23, 21, 31, 0.86);
   border-bottom: 1px solid rgba(147, 143, 158, 0.22);
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.22);
@@ -95,12 +97,12 @@ a {
 
 .brand-tabs {
   display: flex;
-  /* Stretch through the header's vertical padding so the active highlight
-     runs from the top of the screen down to the header's bottom border. */
+  /* Stretch through the header's padding so the active highlight runs from
+     the top of the screen to the header's bottom border, starting flush at
+     the header's left edge. */
   align-self: stretch;
   align-items: stretch;
-  margin: -14px 0;
-  gap: 8px;
+  margin: calc(-1 * var(--shell-pad-y)) 0 calc(-1 * var(--shell-pad-y)) calc(-1 * var(--shell-pad-x));
   min-width: 0;
 }
 
@@ -108,7 +110,9 @@ a {
   position: relative;
   display: inline-flex;
   align-items: center;
-  padding: 0 14px;
+  justify-content: center;
+  /* Equal-width tabs: the highlight block is the same size for both. */
+  width: 176px;
   color: var(--muted);
   font-size: 18px;
   font-weight: 800;
@@ -1117,10 +1121,29 @@ a {
   font-weight: 700;
 }
 
-.taste-cluster-movies {
+.taste-cluster-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-top: 3px;
+}
+
+.taste-cluster-genre {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 8px;
+  border: 1px solid rgba(215, 185, 255, 0.22);
+  border-radius: var(--radius-control);
+  background: rgba(215, 185, 255, 0.1);
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.taste-cluster-size {
   color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
+  font-size: 11px;
 }
 
 .trait-chip-negative {
@@ -2009,16 +2032,13 @@ pre {
 
 @media (max-width: 620px) {
   .app-shell {
-    padding: 12px 14px;
-  }
-
-  .brand-tabs {
-    margin: -12px 0;
-    gap: 6px;
+    --shell-pad-x: 14px;
+    --shell-pad-y: 12px;
+    padding: var(--shell-pad-y) var(--shell-pad-x);
   }
 
   .brand-tabs a {
-    padding: 0 10px;
+    width: 124px;
     font-size: 15px;
   }
 

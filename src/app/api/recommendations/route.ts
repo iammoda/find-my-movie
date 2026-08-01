@@ -26,10 +26,10 @@ export async function GET(request: Request) {
     }
   }
 
-  // Fast path: no new ratings since the last run -> serve the stored run.
+  // Fast path: no new ratings since the last run for this media -> serve it.
   const [ratings, latestRun, hidden] = await Promise.all([
     store.listRatings(),
-    store.getLatestRecommendationRun(),
+    store.getLatestRecommendationRun(undefined, mediaType),
     store.listHiddenRecommendations()
   ]);
   const readiness = recommendationReadiness(ratings);

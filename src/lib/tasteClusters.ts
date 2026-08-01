@@ -18,7 +18,9 @@ export interface LovedMovieSample {
 export interface TasteCluster {
   /** Shared-trait description, e.g. "institutional pressure, real-world stakes". */
   label: string;
-  /** Top member titles by rank score. */
+  /** Dominant genres among members (theme context, not title lists). */
+  genres: string[];
+  /** Top member titles by rank score (kept for tooltips/debugging). */
   exemplars: string[];
   size: number;
   averageRankScore: number;
@@ -86,6 +88,19 @@ function initialCentroids(samples: LovedMovieSample[], normalized: number[][], k
   return chosen.map((index) => normalized[index]);
 }
 
+function sharedGenres(members: LovedMovieSample[], limit = 3): string[] {
+  const genreCounts = new Map<string, number>();
+  for (const member of members) {
+    for (const genre of member.movie.genres.slice(0, 2)) {
+      genreCounts.set(genre.name, (genreCounts.get(genre.name) ?? 0) + 1);
+    }
+  }
+  return [...genreCounts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, limit)
+    .map(([name]) => name);
+}
+
 function clusterLabel(members: LovedMovieSample[]): string {
   const traitCounts = new Map<string, { count: number; weight: number }>();
   for (const member of members) {
@@ -110,17 +125,9 @@ function clusterLabel(members: LovedMovieSample[]): string {
   if (shared.length) return shared.join(", ");
 
   // Fallback: dominant genres among members.
-  const genreCounts = new Map<string, number>();
-  for (const member of members) {
-    for (const genre of member.movie.genres.slice(0, 2)) {
-      genreCounts.set(genre.name, (genreCounts.get(genre.name) ?? 0) + 1);
-    }
-  }
   return (
-    [...genreCounts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 2)
-      .map(([name]) => name.toLowerCase())
+    sharedGenres(members, 2)
+      .map((name) => name.toLowerCase())
       .join(", ") || "eclectic picks"
   );
 }
@@ -168,6 +175,7 @@ export function buildTasteClusters(samples: LovedMovieSample[], maxClusters = 5)
     const sorted = [...members].sort((a, b) => b.rankScore - a.rankScore);
     clusters.push({
       label: clusterLabel(members),
+      genres: sharedGenres(members),
       exemplars: sorted.slice(0, EXEMPLARS_PER_CLUSTER).map((member) => member.movie.title),
       size: members.length,
       averageRankScore: members.reduce((sum, member) => sum + member.rankScore, 0) / members.length
