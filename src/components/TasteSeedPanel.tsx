@@ -25,6 +25,7 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "mo
   const [message, setMessage] = useState<string | null>(null);
   const searchRequestId = useRef(0);
   const seedMode = meaningfulRatingCount < 5;
+  const noun = mediaType === "tv" ? "show" : "movie";
 
   useEffect(() => {
     const nextQuery = query.trim();
@@ -91,12 +92,12 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "mo
     <section className={`taste-seed-panel ${seedMode ? "is-seed-mode" : ""}`} aria-labelledby="taste-seed-heading">
       <div className="taste-seed-heading">
         <div>
-          <p className="eyebrow">{seedMode ? "Seed your taste" : "Add a movie"}</p>
+          <p className="eyebrow">{seedMode ? "Seed your taste" : `Add a ${noun}`}</p>
           <h2 id="taste-seed-heading">Search favorites</h2>
         </div>
       </div>
 
-      <div className="movie-search-form" role="search" aria-label="Search favorite movies">
+      <div className="movie-search-form" role="search" aria-label={`Search favorite ${noun}s`}>
         <div className="search-input-shell">
           <Search size={18} aria-hidden />
           <input
@@ -105,8 +106,8 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "mo
             onKeyDown={(event) => {
               if (event.key === "Enter") event.preventDefault();
             }}
-            aria-label="Search a movie"
-            placeholder="Search a movie"
+            aria-label={`Search a ${noun}`}
+            placeholder={`Search a ${noun}`}
           />
           {query && (
             <button type="button" className="search-clear-button" onClick={clearSearch} aria-label="Clear search">
@@ -142,16 +143,6 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "mo
                 <div className="manual-rating-actions" aria-label={`Rate ${movie.title}`}>
                   <button
                     type="button"
-                    className={existing?.verdict === "loved" ? "is-selected" : undefined}
-                    onClick={() => rate(movie, "loved")}
-                    title="Loved it"
-                    aria-label={existing?.verdict === "loved" ? `Clear loved for ${movie.title}` : `Mark ${movie.title} as loved`}
-                    aria-pressed={existing?.verdict === "loved"}
-                  >
-                    <Heart size={18} />
-                  </button>
-                  <button
-                    type="button"
                     className={existing?.verdict === "fine" ? "is-selected" : undefined}
                     onClick={() => rate(movie, "fine")}
                     title="It was fine"
@@ -159,6 +150,16 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "mo
                     aria-pressed={existing?.verdict === "fine"}
                   >
                     <Meh size={18} />
+                  </button>
+                  <button
+                    type="button"
+                    className={existing?.verdict === "loved" ? "is-selected" : undefined}
+                    onClick={() => rate(movie, "loved")}
+                    title="Loved it"
+                    aria-label={existing?.verdict === "loved" ? `Clear loved for ${movie.title}` : `Mark ${movie.title} as loved`}
+                    aria-pressed={existing?.verdict === "loved"}
+                  >
+                    <Heart size={18} />
                   </button>
                   <button
                     type="button"

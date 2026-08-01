@@ -56,6 +56,28 @@ describe("placement opponent eligibility", () => {
     expect(placement.opponentTmdbId).not.toBe(1);
     expect([2, 3]).toContain(placement.opponentTmdbId);
   });
+
+  it("bootstraps from unconfirmed rows when no confirmed opponents exist yet", async () => {
+    // Fresh media type / fresh user: the only prior rating is an unconfirmed
+    // midpoint. Without the fallback no comparison could ever start and every
+    // rating would sit at the band midpoint forever.
+    const store = mockStore([rating(1, "loved", bandMidpoint("loved"))], []);
+
+    const { placement } = await beginPlacement(store, 2, "loved");
+
+    expect(placement.done).toBe(false);
+    expect(placement.opponentTmdbId).toBe(1);
+    expect(placement.bucketSize).toBe(1);
+  });
+
+  it("still finishes instantly when the verdict bucket is truly empty", async () => {
+    const store = mockStore([], []);
+
+    const { placement } = await beginPlacement(store, 2, "loved");
+
+    expect(placement.done).toBe(true);
+    expect(placement.rankScore).toBe(bandMidpoint("loved"));
+  });
 });
 
 describe("advancePlacement replay by id", () => {

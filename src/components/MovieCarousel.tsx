@@ -78,6 +78,8 @@ const REPLAN_VERDICT_INTERVAL = 8;
  * @param mediaType which catalog the deck draws from (movies or TV shows).
  */
 export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate?: boolean; mediaType?: MediaType }) {
+  // Copy noun per catalog: "movies" on /, "shows" on /tv.
+  const nouns = mediaType === "tv" ? "shows" : "movies";
   const [movies, setMovies] = useState<Movie[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -549,7 +551,7 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
         <div className="carousel-heading">
           <div>
             <p className="eyebrow">Taste ranking</p>
-            <h1 id="carousel-heading">Rate movies fast</h1>
+            <h1 id="carousel-heading">Rate {nouns} fast</h1>
           </div>
         </div>
 
@@ -560,11 +562,11 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
         <TasteSeedPanel meaningfulRatingCount={meaningfulRatingCount} ratings={ratings} mediaType={mediaType} onRate={rateManualMovie} onClearRating={clearManualRating} />
 
         <div className="deck-zone">
-          {loading && <div className="deck-placeholder">Loading movies...</div>}
+          {loading && <div className="deck-placeholder">Loading {nouns}...</div>}
           {!loading && loadError && (
             <div className="deck-placeholder">
               <div className="deck-placeholder-copy">
-                <strong>Could not load movies.</strong>
+                <strong>Could not load {nouns}.</strong>
                 <span>{loadError}</span>
                 <button type="button" className="secondary-button" onClick={() => void loadMovies()}>
                   Retry
@@ -575,8 +577,8 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
           {!loading && !loadError && !currentMovie && (
             <div className="deck-placeholder">
               <div className="deck-placeholder-copy">
-                <strong>No more movies in this batch.</strong>
-                <span>Refresh the deck for more unrated movies.</span>
+                <strong>No more {nouns} in this batch.</strong>
+                <span>Refresh the deck for more unrated {nouns}.</span>
                 <button type="button" className="secondary-button" onClick={() => void loadMovies()}>
                   Check for more
                 </button>
@@ -666,7 +668,7 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
           )}
         </div>
 
-        <div className="queue-preview" aria-label="Upcoming movies">
+        <div className="queue-preview" aria-label={`Upcoming ${nouns}`}>
           {nextMovies.map((movie) => (
             <div className="queue-poster" key={movie.tmdbId}>
               <MoviePoster movie={movie} />

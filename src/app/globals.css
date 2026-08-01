@@ -102,7 +102,8 @@ a {
 
 .brand-tabs a {
   position: relative;
-  padding-bottom: 2px;
+  padding: 5px 12px;
+  border-radius: var(--radius-control);
   color: var(--muted);
   font-size: 18px;
   font-weight: 800;
@@ -112,18 +113,20 @@ a {
 
 .brand-tabs a:hover {
   color: var(--ink);
+  background: var(--state-layer);
 }
 
 .brand-tabs a.is-active {
   color: var(--ink);
+  background: rgba(215, 185, 255, 0.14);
 }
 
 .brand-tabs a.is-active::after {
   content: "";
   position: absolute;
-  right: 0;
-  bottom: -4px;
-  left: 0;
+  right: 12px;
+  bottom: -3px;
+  left: 12px;
   height: 3px;
   border-radius: 2px;
   background: var(--primary);
@@ -1006,6 +1009,11 @@ a {
   display: grid;
   grid-template-columns: repeat(2, 36px);
   gap: 6px;
+}
+
+/* Order: [fine][loved] on top, thumbs-down tucked under the heart. */
+.manual-rating-actions button:last-child {
+  grid-column: 2;
 }
 
 .manual-rating-actions button {

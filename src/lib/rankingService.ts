@@ -62,6 +62,21 @@ function sameMediaRatings(ratings: Rating[], tmdbId: number): Rating[] {
   return ratings.filter((rating) => mediaTypeOfId(rating.tmdbId) === mediaType);
 }
 
+/**
+ * Opponent bucket: confirmed placements preferred, but when none exist yet
+ * (fresh user, first ratings in a new media type) fall back to unconfirmed
+ * rows - otherwise no comparison could ever run and every rating would sit at
+ * its band midpoint forever. The fallback pool is the user's own fresh
+ * verdict-flow ratings, so the "unseen legacy row" protection only matters
+ * once confirmed opponents exist to prefer.
+ */
+function opponentBucket(ratings: Rating[], verdict: Verdict, tmdbId: number, comparisons: Comparison[]): Rating[] {
+  const pool = sameMediaRatings(ratings, tmdbId);
+  const confirmed = sortedBucket(pool, verdict, tmdbId, comparedIdSet(comparisons));
+  if (confirmed.length) return confirmed;
+  return sortedBucket(pool, verdict, tmdbId);
+}
+
 export async function beginPlacement(
   store: MovieStore,
   tmdbId: number,
@@ -70,7 +85,7 @@ export async function beginPlacement(
 ): Promise<BeginPlacementResult> {
   const [ratings, comparisons] = await Promise.all([store.listRatings(profileId), store.listComparisons(profileId)]);
   const previousRating = ratings.find((rating) => rating.tmdbId === tmdbId) ?? null;
-  const bucket = sortedBucket(sameMediaRatings(ratings, tmdbId), verdict, tmdbId, comparedIdSet(comparisons));
+  const bucket = opponentBucket(ratings, verdict, tmdbId, comparisons);
 
   const provisionalScore = bandMidpoint(verdict);
   const rating = await store.upsertRating(tmdbId, legacyRatingFor(verdict, provisionalScore), profileId, {
@@ -112,7 +127,7 @@ export async function advancePlacement(
   }
 
   const verdict = rating.verdict;
-  const bucket = sortedBucket(sameMediaRatings(ratings, tmdbId), verdict, tmdbId, comparedIdSet(comparisons));
+  const bucket = opponentBucket(ratings, verdict, tmdbId, comparisons);
 
   // Replay the session's comparisons, resolving each opponent by id. Steps whose
   // opponent left the bucket (deleted, re-rated) or drifted outside the current
