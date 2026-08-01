@@ -14,13 +14,14 @@ export async function GET() {
   const store = await getSessionStore();
   if (!store) return unauthorized();
   const items = await store.listWatchlist();
-  const movies = await Promise.all(
-    items.map(async (item) => {
-      const movie = await store.getMovie(item.tmdbId);
-      return { ...item, movie: movie ? publicMovie(movie) : null };
-    })
-  );
-  return NextResponse.json({ watchlist: movies.filter((item) => item.movie) });
+  // One batched catalog read instead of 3 queries per item.
+  const movies = await store.getMoviesByIds(items.map((item) => item.tmdbId));
+  const movieById = new Map(movies.map((movie) => [movie.tmdbId, movie]));
+  const watchlist = items.flatMap((item) => {
+    const movie = movieById.get(item.tmdbId);
+    return movie ? [{ ...item, movie: publicMovie(movie) }] : [];
+  });
+  return NextResponse.json({ watchlist });
 }
 
 export async function PATCH(request: Request) {

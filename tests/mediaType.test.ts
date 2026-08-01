@@ -161,6 +161,7 @@ describe("media-filtered recommendations", () => {
       listMovieEmbeddings: vi.fn(async () => []),
       matchMovieEmbeddings: vi.fn(async () => []),
       logExposure: vi.fn(async () => undefined),
+      logExposures: vi.fn(async () => undefined),
       saveRecommendationRun: vi.fn(async (input: { items: Array<Record<string, unknown>>; [key: string]: unknown }) => ({
         id: "run-1",
         profileId: "default",

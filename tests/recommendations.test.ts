@@ -291,6 +291,7 @@ describe("generateRecommendations familiarity guarantees", () => {
       listMovieEmbeddings: vi.fn(async () => []),
       matchMovieEmbeddings: vi.fn(async () => []),
       logExposure: vi.fn(async () => undefined),
+      logExposures: vi.fn(async () => undefined),
       saveRecommendationRun: vi.fn(
         async (input: { items: Array<Record<string, unknown>>; metadata: Record<string, unknown>; [key: string]: unknown }) => {
           const items = input.items.map((item, index) => ({
@@ -354,6 +355,7 @@ describe("generateRecommendations genre filter", () => {
       listMovieEmbeddings: vi.fn(async () => []),
       matchMovieEmbeddings: vi.fn(async () => []),
       logExposure: vi.fn(async () => undefined),
+      logExposures: vi.fn(async () => undefined),
       saveRecommendationRun: vi.fn(
         async (input: { items: Array<Record<string, unknown>>; metadata: Record<string, unknown>; [key: string]: unknown }) => {
           const items = input.items.map((item, index) => ({

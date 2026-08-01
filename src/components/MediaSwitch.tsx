@@ -3,19 +3,19 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
-/** Header segmented control switching between the movie and TV decks. */
+/** Brand-level tabs switching between the movie and TV decks. */
 export function MediaSwitch() {
   const pathname = usePathname();
   const tvActive = pathname === "/tv" || pathname.startsWith("/tv/");
 
   return (
-    <div className="media-switch" role="group" aria-label="Catalog">
+    <nav className="brand-tabs" aria-label="Catalog">
       <Link href="/" className={!tvActive ? "is-active" : ""} aria-current={!tvActive ? "page" : undefined}>
-        Movies
+        Find My Movie
       </Link>
       <Link href="/tv" className={tvActive ? "is-active" : ""} aria-current={tvActive ? "page" : undefined}>
-        TV
+        Find My Show
       </Link>
-    </div>
+    </nav>
   );
 }

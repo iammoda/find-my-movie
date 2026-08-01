@@ -1,7 +1,7 @@
 "use client";
 
 import { EyeOff, Heart, Meh, RefreshCcw, ThumbsDown } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Genre, MediaType, Movie, RecommendationItem, Verdict } from "@/lib/types";
 import { genresForMedia } from "@/lib/constants";
 import { MoviePoster } from "@/components/MoviePoster";
@@ -18,6 +18,8 @@ interface RecommendationsResponse {
   fallback: boolean;
   genre?: Genre | null;
   mediaType?: MediaType;
+  cached?: boolean;
+  generatedAt?: string | null;
 }
 
 interface RecommendationsPanelProps {
@@ -45,6 +47,16 @@ function recommendationChips(item: RecommendationItem) {
   return [...deep.slice(0, 3), ...surface.slice(0, Math.max(0, 3 - deep.length))].map(formatTraitLabel);
 }
 
+function relativeTime(iso: string): string {
+  const elapsed = Date.now() - new Date(iso).getTime();
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
 export function RecommendationsPanel({ ratingsVersion, onRate }: RecommendationsPanelProps) {
   const [data, setData] = useState<RecommendationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -52,6 +64,7 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
   const [genreInput, setGenreInput] = useState("");
   const [genreError, setGenreError] = useState<string | null>(null);
   const [mediaType, setMediaType] = useState<MediaType>("movie");
+  const autoLoaded = useRef(false);
 
   const load = async (media: MediaType = mediaType) => {
     setLoading(true);
@@ -70,6 +83,15 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
       setLoading(false);
     }
   };
+
+  // Show the last run immediately: the server reuses the stored run when no
+  // new ratings landed, so this mount fetch is cheap.
+  useEffect(() => {
+    if (autoLoaded.current) return;
+    autoLoaded.current = true;
+    void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const switchMedia = (media: MediaType) => {
     if (media === mediaType) return;
@@ -155,7 +177,7 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
 
       {genreError && <p className="notice">{genreError} Try one of: {genresForMedia(mediaType).map((genre) => genre.name).join(", ")}.</p>}
 
-      {!data && !genreError && <p className="muted">Rate movies first, then generate a debuggable recommendation run.</p>}
+      {!data && !genreError && <p className="muted">{loading ? "Loading your recommendations…" : "Rate movies first, then generate a recommendation run."}</p>}
 
       {data && !data.ready && (
         <p className="muted">
@@ -167,6 +189,12 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
 
       {data?.ready && (
         <>
+          {data.generatedAt && (
+            <p className="muted recommendation-freshness">
+              Generated {relativeTime(data.generatedAt)}
+              {data.cached ? " · up to date with your ratings" : ""}
+            </p>
+          )}
           {data.fallback && <p className="notice">Fallback ranking is active because taste scoring was unavailable.</p>}
           {data.recommendations.length === 0 && (
             <p className="muted">

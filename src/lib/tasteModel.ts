@@ -547,7 +547,9 @@ function tasteModelCacheKey(signals: TasteModelSignals): string {
   for (const rating of signals.ratings) {
     if (rating.updatedAt > latestRating) latestRating = rating.updatedAt;
   }
-  return [signals.ratings.length, latestRating, signals.appealSignals.length, signals.watchlist.length].join("|");
+  // Profile id must be part of the key: a warm server serves multiple users.
+  const profileId = signals.ratings[0]?.profileId ?? "anon";
+  return [profileId, signals.ratings.length, latestRating, signals.appealSignals.length, signals.watchlist.length].join("|");
 }
 
 export async function loadTasteModel(

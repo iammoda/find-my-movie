@@ -11,6 +11,7 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     // Catalog + pipeline methods (not profile-scoped): straight passthroughs.
     listMovies: (mediaType) => store.listMovies(mediaType),
     getMovie: (tmdbId) => store.getMovie(tmdbId),
+    getMoviesByIds: (tmdbIds) => store.getMoviesByIds(tmdbIds),
     listMovieCredits: (tmdbIds) => store.listMovieCredits(tmdbIds),
     upsertMovies: (movies) => store.upsertMovies(movies),
     replaceTasteFactsForSource: (source, facts) => store.replaceTasteFactsForSource(source, facts),
@@ -45,6 +46,7 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     saveRatingTraitReasons: (tmdbId, traitIds, sentiment) =>
       store.saveRatingTraitReasons(tmdbId, traitIds, sentiment, profileId),
     logExposure: (tmdbId, source, sourceDetail) => store.logExposure(tmdbId, source, sourceDetail, profileId),
+    logExposures: (entries) => store.logExposures(entries, profileId),
     updateExposureBehavior: (exposureId, behavior) => store.updateExposureBehavior(exposureId, behavior, profileId),
     listExposures: () => store.listExposures(profileId),
     deleteExposures: (tmdbId, source) => store.deleteExposures(tmdbId, source, profileId),
@@ -52,6 +54,7 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     listHiddenRecommendations: () => store.listHiddenRecommendations(profileId),
     saveRecommendationRun: (input) => store.saveRecommendationRun(input, profileId),
     listRecommendationRuns: () => store.listRecommendationRuns(profileId),
+    getLatestRecommendationRun: () => store.getLatestRecommendationRun(profileId),
     listWatchlist: () => store.listWatchlist(profileId),
     upsertWatchlistItem: (tmdbId, status) => store.upsertWatchlistItem(tmdbId, status, profileId),
     removeWatchlistItem: (tmdbId) => store.removeWatchlistItem(tmdbId, profileId),

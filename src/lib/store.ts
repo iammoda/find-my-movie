@@ -91,6 +91,8 @@ export interface RatingRankUpdate {
 export interface MovieStore {
   listMovies(mediaType?: MediaType): Promise<Movie[]>;
   getMovie(tmdbId: number): Promise<Movie | null>;
+  /** Targeted catalog read: only the requested ids, avoiding the full-catalog scan. */
+  getMoviesByIds(tmdbIds: number[]): Promise<Movie[]>;
   listMovieCredits(tmdbIds: number[]): Promise<MovieCredit[]>;
   upsertMovies(movies: Movie[]): Promise<void>;
   replaceTasteFactsForSource(source: TasteFact["source"], facts: TasteFact[]): Promise<void>;
@@ -119,6 +121,11 @@ export interface MovieStore {
     profileId?: string
   ): Promise<RatingTraitReason[]>;
   logExposure(tmdbId: number, source: MovieExposure["source"], sourceDetail?: string | null, profileId?: string): Promise<MovieExposure>;
+  /** Batch exposure logging: one write for a whole recommendation run. */
+  logExposures(
+    entries: Array<{ tmdbId: number; source: MovieExposure["source"]; sourceDetail?: string | null }>,
+    profileId?: string
+  ): Promise<void>;
   updateExposureBehavior(exposureId: string, behavior: ExposureBehavior, profileId?: string): Promise<void>;
   listExposures(profileId?: string): Promise<MovieExposure[]>;
   deleteExposures(tmdbId: number, source: MovieExposure["source"], profileId?: string): Promise<void>;
@@ -129,6 +136,8 @@ export interface MovieStore {
   listHiddenRecommendations(profileId?: string): Promise<number[]>;
   saveRecommendationRun(input: RecommendationRunInput, profileId?: string): Promise<RecommendationRun>;
   listRecommendationRuns(profileId?: string): Promise<RecommendationRun[]>;
+  /** Newest run only, hydrated by item ids - no full-catalog scan. */
+  getLatestRecommendationRun(profileId?: string): Promise<RecommendationRun | null>;
   listWatchlist(profileId?: string): Promise<WatchlistItem[]>;
   upsertWatchlistItem(tmdbId: number, status: WatchlistStatus, profileId?: string): Promise<WatchlistItem>;
   removeWatchlistItem(tmdbId: number, profileId?: string): Promise<void>;
@@ -261,6 +270,12 @@ class LocalJsonStore implements MovieStore {
   async getMovie(tmdbId: number) {
     const state = await this.read();
     return state.movies.find((movie) => movie.tmdbId === tmdbId) ?? null;
+  }
+
+  async getMoviesByIds(tmdbIds: number[]) {
+    const state = await this.read();
+    const wanted = new Set(tmdbIds);
+    return state.movies.filter((movie) => wanted.has(movie.tmdbId));
   }
 
   async listMovieCredits(tmdbIds: number[]) {
@@ -496,6 +511,27 @@ class LocalJsonStore implements MovieStore {
     return exposure;
   }
 
+  async logExposures(
+    entries: Array<{ tmdbId: number; source: MovieExposure["source"]; sourceDetail?: string | null }>,
+    profileId = DEFAULT_PROFILE_ID
+  ) {
+    if (!entries.length) return;
+    const state = await this.read();
+    const current = now();
+    for (const entry of entries) {
+      state.exposures.push({
+        id: crypto.randomUUID(),
+        profileId,
+        tmdbId: entry.tmdbId,
+        source: entry.source,
+        sourceDetail: entry.sourceDetail ?? null,
+        flipped: false,
+        createdAt: current
+      });
+    }
+    await this.write(state);
+  }
+
   async updateExposureBehavior(exposureId: string, behavior: ExposureBehavior, profileId = DEFAULT_PROFILE_ID) {
     const state = await this.read();
     state.exposures = state.exposures.map((exposure) => {
@@ -602,6 +638,12 @@ class LocalJsonStore implements MovieStore {
   async listRecommendationRuns(profileId = DEFAULT_PROFILE_ID) {
     const state = await this.read();
     return state.recommendationRuns.filter((run) => run.profileId === profileId);
+  }
+
+  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID) {
+    // Runs are unshifted at save time, so the first match is the newest.
+    const state = await this.read();
+    return state.recommendationRuns.find((run) => run.profileId === profileId) ?? null;
   }
 
   async listWatchlist(profileId = DEFAULT_PROFILE_ID) {
@@ -969,6 +1011,7 @@ const MOVIE_SELECT_COLUMNS = [
 
 class SupabaseMovieStore implements MovieStore {
   private moviesCache: { movies: Movie[]; expiresAt: number } | null = null;
+  private moviesInFlight: Promise<Movie[]> | null = null;
 
   constructor(private db: SupabaseClient) {}
 
@@ -1006,7 +1049,16 @@ class SupabaseMovieStore implements MovieStore {
     if (this.moviesCache && this.moviesCache.expiresAt > Date.now()) {
       return this.moviesCache.movies;
     }
+    // In-flight dedup: concurrent cold requests share one catalog fetch
+    // instead of each paying the full paginated scan.
+    if (this.moviesInFlight) return this.moviesInFlight;
+    this.moviesInFlight = this.fetchAllMovies().finally(() => {
+      this.moviesInFlight = null;
+    });
+    return this.moviesInFlight;
+  }
 
+  private async fetchAllMovies() {
     const pageSize = 1000;
     const rows: Record<string, unknown>[] = [];
 
@@ -1074,6 +1126,38 @@ class SupabaseMovieStore implements MovieStore {
         source: fact.source
       }))
     );
+  }
+
+  async getMoviesByIds(tmdbIds: number[]) {
+    if (!tmdbIds.length) return [];
+    // Warm cache: answer from memory rather than re-querying.
+    if (this.moviesCache && this.moviesCache.expiresAt > Date.now()) {
+      const wanted = new Set(tmdbIds);
+      return this.moviesCache.movies.filter((movie) => wanted.has(movie.tmdbId));
+    }
+
+    const ids = Array.from(new Set(tmdbIds));
+    const rows: Record<string, unknown>[] = [];
+    for (const chunk of chunkArray(ids, 500)) {
+      const { data, error } = await this.db.from("movies").select(MOVIE_SELECT_COLUMNS).in("tmdb_id", chunk);
+      if (error) throw error;
+      rows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
+    }
+
+    const factRows: Record<string, unknown>[] = [];
+    for (const chunk of chunkArray(ids, 1000)) {
+      const { data, error } = await this.db.from("movie_taste_facts").select("*").in("tmdb_id", chunk);
+      if (!error) factRows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
+    }
+    const factsByMovie = factRows.reduce((map, row) => {
+      const fact = dbFactToTasteFact(row);
+      const bucket = map.get(fact.tmdbId) ?? [];
+      bucket.push(fact);
+      map.set(fact.tmdbId, bucket);
+      return map;
+    }, new Map<number, TasteFact[]>());
+
+    return rows.map((row) => dbMovieToMovie(row, undefined, factsByMovie.get(Number(row.tmdb_id))));
   }
 
   async listMovieCredits(tmdbIds: number[]) {
@@ -1414,6 +1498,23 @@ class SupabaseMovieStore implements MovieStore {
     return dbExposureToMovieExposure(data as unknown as Record<string, unknown>);
   }
 
+  async logExposures(
+    entries: Array<{ tmdbId: number; source: MovieExposure["source"]; sourceDetail?: string | null }>,
+    profileId = DEFAULT_PROFILE_ID
+  ) {
+    if (!entries.length) return;
+    await this.ensureProfile(profileId);
+    const { error } = await this.db.from("movie_exposures").insert(
+      entries.map((entry) => ({
+        profile_id: profileId,
+        tmdb_id: entry.tmdbId,
+        source: entry.source,
+        source_detail: entry.sourceDetail ?? null
+      }))
+    );
+    if (error) throw error;
+  }
+
   async updateExposureBehavior(exposureId: string, behavior: ExposureBehavior, profileId = DEFAULT_PROFILE_ID) {
     const payload: Record<string, unknown> = {};
     if (behavior.dwellMs !== undefined) payload.dwell_ms = behavior.dwellMs;
@@ -1621,6 +1722,61 @@ class SupabaseMovieStore implements MovieStore {
         };
       })
     );
+  }
+
+  async getLatestRecommendationRun(profileId = DEFAULT_PROFILE_ID) {
+    const { data: run, error } = await this.db
+      .from("recommendation_runs")
+      .select("*")
+      .eq("profile_id", profileId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (error) throw error;
+    if (!run) return null;
+
+    const { data: items, error: itemError } = await this.db
+      .from("recommendation_items")
+      .select("*")
+      .eq("run_id", run.id)
+      .order("rank");
+    if (itemError) throw itemError;
+
+    // Hydrate only the run's own movies - never the full catalog.
+    const itemRows = (items ?? []) as Record<string, unknown>[];
+    const movies = await this.getMoviesByIds(itemRows.map((item) => Number(item.tmdb_id)));
+    const movieById = new Map(movies.map((movie) => [movie.tmdbId, movie]));
+
+    return {
+      id: String(run.id),
+      profileId,
+      promptVersion: run.prompt_version,
+      scoringVersion: run.scoring_version,
+      status: run.status,
+      baselineAverage: run.baseline_average,
+      recommendationAverage: run.recommendation_average,
+      metadata: run.metadata ?? {},
+      createdAt: run.created_at,
+      items: itemRows.flatMap((item) => {
+        const movie = movieById.get(Number(item.tmdb_id));
+        if (!movie) return [];
+        return [
+          {
+            id: String(item.id),
+            runId: String(run.id),
+            profileId,
+            tmdbId: Number(item.tmdb_id),
+            movie,
+            rank: Number(item.rank),
+            score: Number(item.score),
+            baselineScore: Number(item.baseline_score),
+            scoreBreakdown: item.score_breakdown as RecommendationScoreBreakdown,
+            explanation: (item.explanation as string | null) ?? undefined,
+            createdAt: String(item.created_at)
+          }
+        ];
+      })
+    } as RecommendationRun;
   }
 
   async getProfile(profileId: string) {

@@ -32,12 +32,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body>
         <header className="app-shell">
-          <div className="brand-group">
-            <Link href="/" className="brand" aria-label="Find My Movie home">
-              Find My Movie
-            </Link>
-            <MediaSwitch />
-          </div>
+          <MediaSwitch />
           <nav className="top-nav" aria-label="Secondary navigation">
             <Link href="/taste">Taste</Link>
             {authEnabled ? <Link href="/friends">Friends</Link> : null}

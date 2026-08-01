@@ -861,6 +861,45 @@ export interface RecommendationOptions {
   mediaType?: MediaType;
 }
 
+/** Newest rating touch - together with the count it forms the run-reuse signature. */
+export function latestRatingTimestamp(ratings: Rating[]): string {
+  let latest = "";
+  for (const rating of ratings) {
+    if (rating.updatedAt > latest) latest = rating.updatedAt;
+  }
+  return latest;
+}
+
+interface RunSignatureMetadata {
+  ratedCount?: number;
+  latestRatingAt?: string;
+  mediaType?: MediaType;
+  genreFilter?: { id: number } | null;
+  fallback?: boolean;
+}
+
+/**
+ * Reuse the stored run when nothing that feeds it has changed: same rating
+ * count and newest rating timestamp, same media type, same genre filter.
+ * Old runs without a signature read as stale and regenerate once.
+ */
+export function recommendationRunIsFresh(
+  run: RecommendationRun,
+  ratings: Rating[],
+  mediaType: MediaType,
+  genreId: number | null
+): boolean {
+  const metadata = (run.metadata ?? {}) as RunSignatureMetadata;
+  if (run.status === "fallback") return false;
+  if (metadata.latestRatingAt == null) return false;
+  return (
+    metadata.ratedCount === ratings.length &&
+    metadata.latestRatingAt === latestRatingTimestamp(ratings) &&
+    (metadata.mediaType ?? "movie") === mediaType &&
+    (metadata.genreFilter?.id ?? null) === genreId
+  );
+}
+
 export async function generateRecommendations(
   store: MovieStore,
   profileId = DEFAULT_PROFILE_ID,
@@ -1053,6 +1092,8 @@ export async function generateRecommendations(
         mediaType,
         genreFilter: genreId != null ? { id: genreId, name: options.genreName ?? null } : null,
         ratedCount: ratings.length,
+        // Ratings signature: lets the API reuse this run until a new rating lands.
+        latestRatingAt: latestRatingTimestamp(ratings),
         positiveCount: readiness.positives,
         appealSignalCount: appealSignals.length,
         notInterestedCount: notInterestedIds.size,
@@ -1084,9 +1125,11 @@ export async function generateRecommendations(
     profileId
   );
 
-  for (const item of run.items) {
-    await store.logExposure(item.tmdbId, "recommendation", run.id, profileId);
-  }
+  // One batched write for the run's exposures instead of N sequential inserts.
+  await store.logExposures(
+    run.items.map((item) => ({ tmdbId: item.tmdbId, source: "recommendation" as const, sourceDetail: run.id })),
+    profileId
+  );
 
   return { ready: true, readiness, run, recommendations: run.items, fallback };
 }

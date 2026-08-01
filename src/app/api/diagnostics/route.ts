@@ -18,14 +18,22 @@ export async function GET() {
   const store = await getSessionStore();
   if (!store) return unauthorized();
 
-  const [movies, ratings, exposures, appealSignals, watchlist, runs] = await Promise.all([
-    store.listMovies(),
+  const [ratings, exposures, appealSignals, watchlist, latestRun] = await Promise.all([
     store.listRatings(),
     store.listExposures(),
     store.listAppealSignals(),
     store.listWatchlist(),
-    store.listRecommendationRuns()
+    store.getLatestRecommendationRun()
   ]);
+
+  // Targeted catalog read: the model only trains on movies the user touched.
+  const signalIds = new Set<number>([
+    ...ratings.map((rating) => rating.tmdbId),
+    ...appealSignals.map((signal) => signal.tmdbId),
+    ...watchlist.map((item) => item.tmdbId),
+    ...exposures.map((exposure) => exposure.tmdbId)
+  ]);
+  const movies = await store.getMoviesByIds([...signalIds]);
 
   // Deck ratability: share of recent deck interactions marked "haven't seen".
   const deckInteractions = exposures
@@ -48,8 +56,6 @@ export async function GET() {
   } catch {
     // Cold start / embeddings unavailable: report model as not ready.
   }
-
-  const latestRun = [...runs].sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0] ?? null;
 
   return NextResponse.json({
     deck: {

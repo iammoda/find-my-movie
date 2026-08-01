@@ -66,13 +66,27 @@ function peopleAffinity(loved: Rating[], byId: Map<number, Movie>, credits: Map<
 export async function GET() {
   const store = await getSessionStore();
   if (!store) return unauthorized();
-  const [movies, ratings, exposures, appealSignals, watchlist] = await Promise.all([
-    store.listMovies(),
+  const [ratings, exposures, appealSignals, watchlist] = await Promise.all([
     store.listRatings(),
     store.listExposures(),
     store.listAppealSignals(),
     store.listWatchlist()
   ]);
+
+  // Targeted catalog read: the profile + taste model only ever look up movies
+  // the user has signals for - never the full catalog.
+  const impressionCounts = new Map<number, number>();
+  for (const exposure of exposures) {
+    if (exposure.source === "not_seen") continue;
+    impressionCounts.set(exposure.tmdbId, (impressionCounts.get(exposure.tmdbId) ?? 0) + 1);
+  }
+  const signalIds = new Set<number>([
+    ...ratings.map((rating) => rating.tmdbId),
+    ...appealSignals.map((signal) => signal.tmdbId),
+    ...watchlist.map((item) => item.tmdbId),
+    ...[...impressionCounts.entries()].filter(([, count]) => count >= 3).map(([tmdbId]) => tmdbId)
+  ]);
+  const movies = await store.getMoviesByIds([...signalIds]);
 
   const readiness = recommendationReadiness(ratings);
 
