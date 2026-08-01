@@ -1077,6 +1077,53 @@ a {
   margin-top: 14px;
 }
 
+.recommendation-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.genre-input {
+  min-height: 38px;
+  min-width: 140px;
+  padding: 0 12px;
+  border: 1px solid rgba(147, 143, 158, 0.22);
+  border-radius: var(--radius-control);
+  background: var(--surface-container-high);
+  color: var(--ink);
+  font-size: 14px;
+}
+
+.genre-input::placeholder {
+  color: var(--muted);
+}
+
+.genre-filter-label {
+  color: var(--primary);
+  font-weight: 700;
+}
+
+.genre-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.genre-chip {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 0 8px;
+  border: 1px solid rgba(147, 143, 158, 0.24);
+  border-radius: var(--radius-control);
+  background: var(--surface-container);
+  color: var(--secondary);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+
 .recommendation-card {
   display: block;
   min-width: 0;

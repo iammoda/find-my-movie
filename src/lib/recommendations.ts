@@ -810,7 +810,17 @@ export function scoreCandidateWithModel(
   };
 }
 
-export async function generateRecommendations(store: MovieStore, profileId = DEFAULT_PROFILE_ID, limit = 10): Promise<RecommendationResult> {
+export interface RecommendationOptions {
+  genreId?: number;
+  genreName?: string;
+}
+
+export async function generateRecommendations(
+  store: MovieStore,
+  profileId = DEFAULT_PROFILE_ID,
+  limit = 10,
+  options: RecommendationOptions = {}
+): Promise<RecommendationResult> {
   const startedAt = Date.now();
   const [movies, ratings, ratingReasons, ratingTraitReasons, exposures, appealSignals, watchlist, hidden] = await Promise.all([
     store.listMovies(),
@@ -840,9 +850,14 @@ export async function generateRecommendations(store: MovieStore, profileId = DEF
     .filter((exposure) => exposure.source === "recommendation")
     .map((exposure) => exposure.tmdbId);
 
+  const genreId = options.genreId ?? null;
   const candidates = movies.filter(
     (movie) =>
-      candidateUsable(movie) && !ratedIds.has(movie.tmdbId) && !hiddenIds.has(movie.tmdbId) && !notInterestedIds.has(movie.tmdbId)
+      candidateUsable(movie) &&
+      !ratedIds.has(movie.tmdbId) &&
+      !hiddenIds.has(movie.tmdbId) &&
+      !notInterestedIds.has(movie.tmdbId) &&
+      (genreId == null || movie.genres.some((genre) => genre.id === genreId))
   );
   const excludedIds = Array.from(new Set([...ratedIds, ...hiddenIds, ...notInterestedIds]));
 
@@ -987,6 +1002,7 @@ export async function generateRecommendations(store: MovieStore, profileId = DEF
       recommendationAverage: averageRatedScoreForSource(ratings, recommendationExposureIds),
       metadata: {
         candidateCount: candidates.length,
+        genreFilter: genreId != null ? { id: genreId, name: options.genreName ?? null } : null,
         ratedCount: ratings.length,
         positiveCount: readiness.positives,
         appealSignalCount: appealSignals.length,

@@ -2,7 +2,8 @@
 
 import { EyeOff, Heart, Meh, RefreshCcw, ThumbsDown } from "lucide-react";
 import { useState } from "react";
-import type { Movie, RecommendationItem, Verdict } from "@/lib/types";
+import type { Genre, Movie, RecommendationItem, Verdict } from "@/lib/types";
+import { MOVIE_GENRES } from "@/lib/constants";
 import { MoviePoster } from "@/components/MoviePoster";
 
 interface RecommendationsResponse {
@@ -15,6 +16,7 @@ interface RecommendationsResponse {
   };
   recommendations: RecommendationItem[];
   fallback: boolean;
+  genre?: Genre | null;
 }
 
 interface RecommendationsPanelProps {
@@ -46,12 +48,22 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
   const [data, setData] = useState<RecommendationsResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [genreInput, setGenreInput] = useState("");
+  const [genreError, setGenreError] = useState<string | null>(null);
 
   const load = async () => {
     setLoading(true);
+    setGenreError(null);
     try {
-      const response = await fetch(`/api/recommendations?ratingsVersion=${ratingsVersion}`, { cache: "no-store" });
-      setData(await response.json());
+      const params = new URLSearchParams({ ratingsVersion: String(ratingsVersion) });
+      if (genreInput.trim()) params.set("genre", genreInput.trim());
+      const response = await fetch(`/api/recommendations?${params.toString()}`, { cache: "no-store" });
+      const payload = await response.json();
+      if (!response.ok) {
+        setGenreError(payload.error ?? "Could not generate recommendations.");
+        return;
+      }
+      setData(payload);
     } finally {
       setLoading(false);
     }
@@ -90,15 +102,42 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
       <div className="section-heading">
         <div>
           <p className="eyebrow">Taste test</p>
-          <h2 id="recommendations-heading">Recommendations</h2>
+          <h2 id="recommendations-heading">
+            Recommendations
+            {data?.genre ? <span className="genre-filter-label"> · {data.genre.name}</span> : null}
+          </h2>
         </div>
-        <button type="button" className="secondary-button" onClick={load} disabled={loading}>
-          <RefreshCcw size={16} />
-          {loading ? "Checking" : "Generate"}
-        </button>
+        <div className="recommendation-controls">
+          <input
+            type="text"
+            className="genre-input"
+            list="recommendation-genres"
+            placeholder="Any genre"
+            aria-label="Filter recommendations by genre"
+            value={genreInput}
+            onChange={(event) => {
+              setGenreInput(event.target.value);
+              setGenreError(null);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !loading) load();
+            }}
+          />
+          <datalist id="recommendation-genres">
+            {MOVIE_GENRES.map((genre) => (
+              <option key={genre.id} value={genre.name} />
+            ))}
+          </datalist>
+          <button type="button" className="secondary-button" onClick={load} disabled={loading}>
+            <RefreshCcw size={16} />
+            {loading ? "Checking" : "Generate"}
+          </button>
+        </div>
       </div>
 
-      {!data && <p className="muted">Rate movies first, then generate a debuggable recommendation run.</p>}
+      {genreError && <p className="notice">{genreError} Try one of: {MOVIE_GENRES.map((genre) => genre.name).join(", ")}.</p>}
+
+      {!data && !genreError && <p className="muted">Rate movies first, then generate a debuggable recommendation run.</p>}
 
       {data && !data.ready && (
         <p className="muted">
@@ -111,11 +150,17 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
       {data?.ready && (
         <>
           {data.fallback && <p className="notice">Fallback ranking is active because taste scoring was unavailable.</p>}
+          {data.recommendations.length === 0 && (
+            <p className="muted">
+              {data.genre
+                ? `No recommendations available for ${data.genre.name} right now. Try another genre or rate more movies.`
+                : "No recommendations available right now. Rate more movies to add signal."}
+            </p>
+          )}
           <div className="recommendation-grid">
             {data.recommendations.map((item) => {
               const expanded = expandedId === item.id;
               const year = item.movie.releaseDate?.slice(0, 4);
-              const genres = item.movie.genres.slice(0, 2).map((genre) => genre.name).join(", ");
 
               return (
                 <article className={`recommendation-card ${expanded ? "is-expanded" : ""}`} key={item.id}>
@@ -130,7 +175,7 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
                     </div>
                     <div className="recommendation-body">
                       <p className="recommendation-meta">
-                        <span className="recommendation-meta-text">{[year, genres].filter(Boolean).join(" · ")}</span>
+                        <span className="recommendation-meta-text">{year}</span>
                         {item.scoreBreakdown.predictedRankScore != null && (
                           <span
                             className="predicted-score"
@@ -141,6 +186,15 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
                         )}
                       </p>
                       <h3>{item.movie.title}</h3>
+                      {item.movie.genres.length > 0 && (
+                        <span className="genre-chip-row" aria-label="Genres">
+                          {item.movie.genres.map((genre) => (
+                            <span className="genre-chip" key={genre.id}>
+                              {genre.name}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                       <p>{item.movie.overview || "No synopsis available."}</p>
                     </div>
                   </button>

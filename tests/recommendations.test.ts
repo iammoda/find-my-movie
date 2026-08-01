@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
-import { buildTasteProfile, scoreMovieCandidate } from "@/lib/recommendations";
-import type { Movie, MovieExposure, Rating, RatingTraitReason, TasteFact } from "@/lib/types";
+import { describe, expect, it, vi } from "vitest";
+import { buildTasteProfile, generateRecommendations, scoreMovieCandidate } from "@/lib/recommendations";
+import type { MovieStore } from "@/lib/store";
+import type { Movie, MovieExposure, Rating, RatingTraitReason, RecommendationItem, RecommendationRun, TasteFact } from "@/lib/types";
 
 function fact(tmdbId: number, kind: TasteFact["kind"], value: string, weight = 1, source: TasteFact["source"] = "curated"): TasteFact {
   return { tmdbId, kind, value, weight, source };
@@ -256,5 +257,90 @@ describe("recommendation scoring", () => {
     expect(focusedProfile.positive.get("theme:moral_compromise")?.score ?? 0).toBeLessThan(
       plainProfile.positive.get("theme:moral_compromise")?.score ?? 0
     );
+  });
+});
+
+describe("generateRecommendations genre filter", () => {
+  const ACTION = { id: 28, name: "Action" };
+  const DRAMA = { id: 18, name: "Drama" };
+
+  function buildMockStore() {
+    const ratedMovies = Array.from({ length: 10 }, (_, index) =>
+      movie(200 + index, `Rated Movie ${index}`, [fact(200 + index, "tone", "tense")], [DRAMA])
+    );
+    const actionCandidates = Array.from({ length: 3 }, (_, index) =>
+      movie(300 + index, `Action Candidate ${index}`, [fact(300 + index, "tone", "tense")], [ACTION])
+    );
+    const dramaCandidates = Array.from({ length: 3 }, (_, index) =>
+      movie(400 + index, `Drama Candidate ${index}`, [fact(400 + index, "tone", "tense")], [DRAMA])
+    );
+    const ratings = ratedMovies.map((rated, index) => rating(rated.tmdbId, index < 4 ? "like" : "dislike"));
+
+    const store = {
+      listMovies: vi.fn(async () => [...ratedMovies, ...actionCandidates, ...dramaCandidates]),
+      listRatings: vi.fn(async () => ratings),
+      listRatingReasons: vi.fn(async () => []),
+      listRatingTraitReasons: vi.fn(async () => []),
+      listExposures: vi.fn(async () => []),
+      listAppealSignals: vi.fn(async () => []),
+      listWatchlist: vi.fn(async () => []),
+      listHiddenRecommendations: vi.fn(async () => []),
+      listComparisons: vi.fn(async () => []),
+      listMovieEmbeddings: vi.fn(async () => []),
+      matchMovieEmbeddings: vi.fn(async () => []),
+      logExposure: vi.fn(async () => undefined),
+      saveRecommendationRun: vi.fn(
+        async (input: { items: Array<Record<string, unknown>>; metadata: Record<string, unknown>; [key: string]: unknown }) => {
+          const items = input.items.map((item, index) => ({
+            ...item,
+            id: `item-${index}`,
+            runId: "run-1",
+            profileId: "default",
+            createdAt: "2026-01-01T00:00:00.000Z"
+          })) as unknown as RecommendationItem[];
+          return {
+            id: "run-1",
+            profileId: "default",
+            promptVersion: String(input.promptVersion),
+            scoringVersion: String(input.scoringVersion),
+            status: input.status,
+            baselineAverage: null,
+            recommendationAverage: null,
+            metadata: input.metadata ?? {},
+            createdAt: "2026-01-01T00:00:00.000Z",
+            items
+          } as RecommendationRun;
+        }
+      )
+    };
+
+    return store as unknown as MovieStore & typeof store;
+  }
+
+  it("only recommends movies in the requested genre and records the filter", async () => {
+    const store = buildMockStore();
+    const result = await generateRecommendations(store, "default", 10, { genreId: ACTION.id, genreName: ACTION.name });
+
+    expect(result.ready).toBe(true);
+    expect(result.recommendations.length).toBeGreaterThan(0);
+    for (const item of result.recommendations) {
+      expect(item.movie.genres.map((genre) => genre.id)).toContain(ACTION.id);
+    }
+
+    const runInput = store.saveRecommendationRun.mock.calls[0][0];
+    expect(runInput.metadata.genreFilter).toEqual({ id: ACTION.id, name: ACTION.name });
+  });
+
+  it("recommends across genres when no filter is given", async () => {
+    const store = buildMockStore();
+    const result = await generateRecommendations(store, "default", 10);
+
+    expect(result.ready).toBe(true);
+    const genreIds = new Set(result.recommendations.flatMap((item) => item.movie.genres.map((genre) => genre.id)));
+    expect(genreIds.has(ACTION.id)).toBe(true);
+    expect(genreIds.has(DRAMA.id)).toBe(true);
+
+    const runInput = store.saveRecommendationRun.mock.calls[0][0];
+    expect(runInput.metadata.genreFilter).toBeNull();
   });
 });
