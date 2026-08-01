@@ -1491,15 +1491,6 @@ a {
   width: min(640px, 100%);
 }
 
-.comparison-not-seen {
-  max-width: 55%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: block;
-  line-height: 38px;
-}
-
 .comparison-pair {
   display: grid;
   grid-template-columns: 1fr auto 1fr;
