@@ -44,6 +44,8 @@ function featurePairs(movie: Movie): Array<[string, number]> {
   // (5k vs 10k votes) where real users' seen/not-seen boundary lives.
   pairs.push(["votesLinear", Math.min(2, Math.max(0, movie.voteCount) / 10000)]);
   pairs.push(["popularity", Math.min(1.5, Math.log10(1 + Math.max(0, movie.popularity)) / 3)]);
+  // TV familiarity differs systematically from movies (vote scales, viewing habits).
+  if (movie.mediaType === "tv") pairs.push(["media:tv", 1]);
 
   const year = movie.releaseDate ? Number(movie.releaseDate.slice(0, 4)) : NaN;
   if (Number.isFinite(year)) {

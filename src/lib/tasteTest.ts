@@ -1,4 +1,4 @@
-import { MIN_BROWSE_POPULARITY, MIN_BROWSE_VOTE_COUNT, MIN_STABLE_RELEASE_DAYS } from "@/lib/constants";
+import { MEDIA_PROFILES, MIN_STABLE_RELEASE_DAYS } from "@/lib/constants";
 import { handledMovieIds } from "@/lib/handled";
 import { isPrimaryAudienceMovie } from "@/lib/language";
 import { isReleasedAtLeastDaysAgo, mainstreamScore, qualityScore } from "@/lib/quality";
@@ -9,16 +9,27 @@ import type { AppealSignal, Movie, MovieExposure, Rating } from "@/lib/types";
 
 export { buildSeenPrior } from "@/lib/seenModel";
 
-const MIN_TASTE_TEST_VOTE_AVERAGE = 6.25;
-
-// Relaxed floors keep the deck alive once the strict mainstream pool is
-// exhausted by a heavy rater. They widen quality/popularity slightly but
-// never dip below the strict vote floor: the user's own swipe data shows
-// "haven't seen" cards are mid-popular, not low-vote, so digging into the
-// deep catalog only adds unratable obscurities.
-const RELAXED_MIN_VOTE_COUNT = MIN_BROWSE_VOTE_COUNT;
-const RELAXED_MIN_VOTE_AVERAGE = 6.0;
-const RELAXED_MIN_POPULARITY = 5;
+export function usableTasteTestMovie(movie: Movie, relaxed = false) {
+  const profile = MEDIA_PROFILES[movie.mediaType ?? "movie"];
+  // Relaxed floors keep the deck alive once the strict mainstream pool is
+  // exhausted by a heavy rater. They widen quality/popularity slightly but
+  // never dip below the strict vote floor: swipe data shows "haven't seen"
+  // cards are mid-popular, not low-vote, so digging into the deep catalog
+  // only adds unratable obscurities.
+  const minVotes = profile.minBrowseVoteCount;
+  const minAverage = relaxed ? profile.relaxedMinVoteAverage : profile.minTasteTestVoteAverage;
+  const minPopularity = relaxed ? profile.relaxedMinPopularity : profile.minBrowsePopularity;
+  return (
+    !movie.adult &&
+    Boolean(movie.posterPath) &&
+    Boolean(movie.overview) &&
+    movie.voteCount >= minVotes &&
+    movie.voteAverage >= minAverage &&
+    movie.popularity >= minPopularity &&
+    isReleasedAtLeastDaysAgo(movie.releaseDate, MIN_STABLE_RELEASE_DAYS) &&
+    isPrimaryAudienceMovie(movie)
+  );
+}
 /** Rebuild with relaxed floors when the strict queue comes up shorter than limit/N. */
 const RELAXED_QUEUE_TRIGGER_DIVISOR = 3;
 
@@ -59,22 +70,6 @@ const DEFAULT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.25, neighborhood: 0.2,
 const HOT_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.3, neighborhood: 0.15, explore: 0.2, hits: 0.1, traitGap: 0.15, misses: 0.1 };
 /** Cold streak: rebuild confidence with likely hits before probing again. */
 const COLD_PROBE_WEIGHTS: ProbeWeights = { frontier: 0.15, neighborhood: 0.25, explore: 0.05, hits: 0.4, traitGap: 0.15, misses: 0 };
-
-export function usableTasteTestMovie(movie: Movie, relaxed = false) {
-  const minVotes = relaxed ? RELAXED_MIN_VOTE_COUNT : MIN_BROWSE_VOTE_COUNT;
-  const minAverage = relaxed ? RELAXED_MIN_VOTE_AVERAGE : MIN_TASTE_TEST_VOTE_AVERAGE;
-  const minPopularity = relaxed ? RELAXED_MIN_POPULARITY : MIN_BROWSE_POPULARITY;
-  return (
-    !movie.adult &&
-    Boolean(movie.posterPath) &&
-    Boolean(movie.overview) &&
-    movie.voteCount >= minVotes &&
-    movie.voteAverage >= minAverage &&
-    movie.popularity >= minPopularity &&
-    isReleasedAtLeastDaysAgo(movie.releaseDate, MIN_STABLE_RELEASE_DAYS) &&
-    isPrimaryAudienceMovie(movie)
-  );
-}
 
 function movieSignature(movie: Movie) {
   const facts = deriveTasteFacts(movie);
@@ -448,8 +443,9 @@ function buildQueueWithFloors(
     decadeBucket.push(movie);
     decadeBuckets.set(decade, decadeBucket);
 
-    if (movie.voteAverage >= 7.9 && movie.voteCount >= 4000) anchors.push(movie);
-    if (movie.voteAverage >= 6.4 && movie.voteAverage <= 7.7 && movie.voteCount >= 2500) divisive.push(movie);
+    const profile = MEDIA_PROFILES[movie.mediaType ?? "movie"];
+    if (movie.voteAverage >= 7.9 && movie.voteCount >= profile.anchorVoteCount) anchors.push(movie);
+    if (movie.voteAverage >= 6.4 && movie.voteAverage <= 7.7 && movie.voteCount >= profile.divisiveVoteCount) divisive.push(movie);
   }
 
   const genreLeaders = Array.from(genreBuckets.values()).map((bucket) => bucket.slice(0, 8));

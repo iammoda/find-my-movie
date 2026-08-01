@@ -2,7 +2,7 @@
 
 import { Info, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AppealSignal, AppealSignalValue, Movie, MovieExposure, Rating, Verdict } from "@/lib/types";
+import type { AppealSignal, AppealSignalValue, MediaType, Movie, MovieExposure, Rating, Verdict } from "@/lib/types";
 import { ComparisonPrompt } from "@/components/ComparisonPrompt";
 import { MoviePoster } from "@/components/MoviePoster";
 import { RatingControls } from "@/components/RatingControls";
@@ -75,8 +75,9 @@ const REPLAN_VERDICT_INTERVAL = 8;
  * @param canRate false when accounts are enabled and the visitor is signed
  * out: browsing works, but rating actions redirect to login and no personal
  * signals (ratings, exposures, appeal) are read or written.
+ * @param mediaType which catalog the deck draws from (movies or TV shows).
  */
-export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
+export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate?: boolean; mediaType?: MediaType }) {
   const [movies, setMovies] = useState<Movie[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -158,7 +159,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
     setDeckExhausted(false);
     verdictsSinceLoadRef.current = 0;
     try {
-      const params = new URLSearchParams({ category: "taste_test" });
+      const params = new URLSearchParams({ category: "taste_test", mediaType });
       const response = await fetch(`/api/movies/browse?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`Browse failed with ${response.status}`);
       const data = (await response.json()) as BrowseResponse;
@@ -174,7 +175,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
     } finally {
       if (browseRequestId.current === requestId) setLoading(false);
     }
-  }, [filterUnhandledMovies]);
+  }, [filterUnhandledMovies, mediaType]);
 
   /**
    * Background deck re-rank: keeps the card the user is looking at, replaces
@@ -184,7 +185,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
     const requestId = browseRequestId.current + 1;
     browseRequestId.current = requestId;
     try {
-      const params = new URLSearchParams({ category: "taste_test" });
+      const params = new URLSearchParams({ category: "taste_test", mediaType });
       const response = await fetch(`/api/movies/browse?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) return;
       const data = (await response.json()) as BrowseResponse;
@@ -200,7 +201,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
     } catch {
       // Silent: the existing deck keeps working; the next full load recovers.
     }
-  }, [filterUnhandledMovies]);
+  }, [filterUnhandledMovies, mediaType]);
 
   const noteVerdictForReplan = useCallback(() => {
     verdictsSinceLoadRef.current += 1;
@@ -556,7 +557,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
           Seen it? Use the buttons. Haven&apos;t? Swipe right to watchlist, left to pass.
         </div>
 
-        <TasteSeedPanel meaningfulRatingCount={meaningfulRatingCount} ratings={ratings} onRate={rateManualMovie} onClearRating={clearManualRating} />
+        <TasteSeedPanel meaningfulRatingCount={meaningfulRatingCount} ratings={ratings} mediaType={mediaType} onRate={rateManualMovie} onClearRating={clearManualRating} />
 
         <div className="deck-zone">
           {loading && <div className="deck-placeholder">Loading movies...</div>}

@@ -10,13 +10,15 @@ export async function GET(request: Request) {
   const store = await getSessionStore();
   if (!store) return unauthorized();
 
-  const genreInput = new URL(request.url).searchParams.get("genre")?.trim() ?? "";
+  const searchParams = new URL(request.url).searchParams;
+  const mediaType = searchParams.get("media") === "tv" ? ("tv" as const) : ("movie" as const);
+  const genreInput = searchParams.get("genre")?.trim() ?? "";
   let genre: ReturnType<typeof resolveGenre> = null;
   if (genreInput) {
-    genre = resolveGenre(genreInput);
+    genre = resolveGenre(genreInput, mediaType);
     if (!genre) {
       return NextResponse.json(
-        { error: `Unknown genre "${genreInput}".`, suggestions: genreSuggestions() },
+        { error: `Unknown genre "${genreInput}".`, suggestions: genreSuggestions(mediaType) },
         { status: 400 }
       );
     }
@@ -24,7 +26,8 @@ export async function GET(request: Request) {
 
   const result = await generateRecommendations(store, undefined, undefined, {
     genreId: genre?.id,
-    genreName: genre?.name
+    genreName: genre?.name,
+    mediaType
   });
-  return NextResponse.json({ ...publicRecommendationResult(result), genre });
+  return NextResponse.json({ ...publicRecommendationResult(result), genre, mediaType });
 }

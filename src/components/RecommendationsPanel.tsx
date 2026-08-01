@@ -2,8 +2,8 @@
 
 import { EyeOff, Heart, Meh, RefreshCcw, ThumbsDown } from "lucide-react";
 import { useState } from "react";
-import type { Genre, Movie, RecommendationItem, Verdict } from "@/lib/types";
-import { MOVIE_GENRES } from "@/lib/constants";
+import type { Genre, MediaType, Movie, RecommendationItem, Verdict } from "@/lib/types";
+import { genresForMedia } from "@/lib/constants";
 import { MoviePoster } from "@/components/MoviePoster";
 
 interface RecommendationsResponse {
@@ -17,6 +17,7 @@ interface RecommendationsResponse {
   recommendations: RecommendationItem[];
   fallback: boolean;
   genre?: Genre | null;
+  mediaType?: MediaType;
 }
 
 interface RecommendationsPanelProps {
@@ -50,12 +51,13 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [genreInput, setGenreInput] = useState("");
   const [genreError, setGenreError] = useState<string | null>(null);
+  const [mediaType, setMediaType] = useState<MediaType>("movie");
 
-  const load = async () => {
+  const load = async (media: MediaType = mediaType) => {
     setLoading(true);
     setGenreError(null);
     try {
-      const params = new URLSearchParams({ ratingsVersion: String(ratingsVersion) });
+      const params = new URLSearchParams({ ratingsVersion: String(ratingsVersion), media });
       if (genreInput.trim()) params.set("genre", genreInput.trim());
       const response = await fetch(`/api/recommendations?${params.toString()}`, { cache: "no-store" });
       const payload = await response.json();
@@ -67,6 +69,14 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
     } finally {
       setLoading(false);
     }
+  };
+
+  const switchMedia = (media: MediaType) => {
+    if (media === mediaType) return;
+    setMediaType(media);
+    setGenreInput("");
+    setGenreError(null);
+    if (data) void load(media);
   };
 
   const hide = async (item: RecommendationItem) => {
@@ -108,6 +118,14 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
           </h2>
         </div>
         <div className="recommendation-controls">
+          <div className="media-switch" role="group" aria-label="Recommendation catalog">
+            <button type="button" className={mediaType === "movie" ? "is-active" : ""} onClick={() => switchMedia("movie")}>
+              Movies
+            </button>
+            <button type="button" className={mediaType === "tv" ? "is-active" : ""} onClick={() => switchMedia("tv")}>
+              TV
+            </button>
+          </div>
           <input
             type="text"
             className="genre-input"
@@ -124,18 +142,18 @@ export function RecommendationsPanel({ ratingsVersion, onRate }: Recommendations
             }}
           />
           <datalist id="recommendation-genres">
-            {MOVIE_GENRES.map((genre) => (
+            {genresForMedia(mediaType).map((genre) => (
               <option key={genre.id} value={genre.name} />
             ))}
           </datalist>
-          <button type="button" className="secondary-button" onClick={load} disabled={loading}>
+          <button type="button" className="secondary-button" onClick={() => load()} disabled={loading}>
             <RefreshCcw size={16} />
             {loading ? "Checking" : "Generate"}
           </button>
         </div>
       </div>
 
-      {genreError && <p className="notice">{genreError} Try one of: {MOVIE_GENRES.map((genre) => genre.name).join(", ")}.</p>}
+      {genreError && <p className="notice">{genreError} Try one of: {genresForMedia(mediaType).map((genre) => genre.name).join(", ")}.</p>}
 
       {!data && !genreError && <p className="muted">Rate movies first, then generate a debuggable recommendation run.</p>}
 

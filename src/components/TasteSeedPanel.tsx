@@ -2,7 +2,7 @@
 
 import { Heart, Meh, Search, ThumbsDown, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import type { Movie, Rating, Verdict } from "@/lib/types";
+import type { MediaType, Movie, Rating, Verdict } from "@/lib/types";
 import { MoviePoster } from "@/components/MoviePoster";
 import { verdictLabel } from "@/lib/rating";
 
@@ -13,11 +13,12 @@ interface SearchResponse {
 interface TasteSeedPanelProps {
   meaningfulRatingCount: number;
   ratings: Map<number, Rating>;
+  mediaType?: MediaType;
   onRate: (movie: Movie, verdict: Verdict) => Promise<void>;
   onClearRating: (movie: Movie) => Promise<void>;
 }
 
-export function TasteSeedPanel({ meaningfulRatingCount, ratings, onRate, onClearRating }: TasteSeedPanelProps) {
+export function TasteSeedPanel({ meaningfulRatingCount, ratings, mediaType = "movie", onRate, onClearRating }: TasteSeedPanelProps) {
   const [query, setQuery] = useState("");
   const [movies, setMovies] = useState<Movie[]>([]);
   const [loading, setLoading] = useState(false);
@@ -42,7 +43,7 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, onRate, onClear
     const controller = new AbortController();
     const timeoutId = window.setTimeout(async () => {
       try {
-        const response = await fetch(`/api/movies/search?q=${encodeURIComponent(nextQuery)}`, {
+        const response = await fetch(`/api/movies/search?q=${encodeURIComponent(nextQuery)}&mediaType=${mediaType}`, {
           cache: "no-store",
           signal: controller.signal
         });
@@ -64,7 +65,7 @@ export function TasteSeedPanel({ meaningfulRatingCount, ratings, onRate, onClear
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [query]);
+  }, [query, mediaType]);
 
   const rate = async (movie: Movie, verdict: Verdict) => {
     const existing = ratings.get(movie.tmdbId);

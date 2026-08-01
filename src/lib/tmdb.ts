@@ -56,11 +56,11 @@ function genreName(id: number) {
   return MOVIE_GENRES.find((genre) => genre.id === id)?.name ?? String(id);
 }
 
-function tmdbConfigured() {
+export function tmdbConfigured() {
   return Boolean(process.env.TMDB_ACCESS_TOKEN);
 }
 
-async function tmdbFetch<T>(path: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+export async function tmdbFetch<T>(path: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
   const url = new URL(`${TMDB_BASE}${path}`);
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) url.searchParams.set(key, String(value));

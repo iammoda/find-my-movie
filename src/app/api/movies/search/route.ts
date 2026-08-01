@@ -4,11 +4,13 @@ import { scheduleMovieIntelligence } from "@/lib/intelligence";
 import { publicMovie } from "@/lib/publicMovie";
 import { getStore } from "@/lib/store";
 import { searchMovies } from "@/lib/tmdb";
+import { searchTv } from "@/lib/tmdbTv";
 
 export const dynamic = "force-dynamic";
 
 const querySchema = z.object({
-  q: z.string().trim().min(2).max(80)
+  q: z.string().trim().min(2).max(80),
+  mediaType: z.enum(["movie", "tv"]).default("movie")
 });
 
 export async function GET(request: Request) {
@@ -19,7 +21,7 @@ export async function GET(request: Request) {
   }
 
   const store = getStore();
-  const movies = await searchMovies(parsed.data.q);
+  const movies = parsed.data.mediaType === "tv" ? await searchTv(parsed.data.q) : await searchMovies(parsed.data.q);
   await store.upsertMovies(movies);
   scheduleMovieIntelligence(store, movies);
   const enriched = await Promise.all(movies.map(async (movie) => (await store.getMovie(movie.tmdbId)) ?? movie));

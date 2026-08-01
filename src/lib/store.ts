@@ -1,10 +1,11 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import { DEFAULT_PROFILE_ID, ANONYMOUS_PROFILE_ID, MAX_STARTER_POOL_MOVIES } from "@/lib/constants";
+import { DEFAULT_PROFILE_ID, ANONYMOUS_PROFILE_ID, MAX_CATALOG_ROWS } from "@/lib/constants";
 import { FALLBACK_MOVIES } from "@/lib/data/fallbackMovies";
 import { friendDisplayName } from "@/lib/displayName";
 import { deriveTasteFacts } from "@/lib/taste";
+import { mediaTypeOfId, sourceIdOf } from "@/lib/mediaId";
 import type {
   AppealSignal,
   AppealSignalValue,
@@ -13,6 +14,7 @@ import type {
   ExposureBehavior,
   Friend,
   FriendInvite,
+  MediaType,
   Movie,
   MovieCredit,
   MovieEmbedding,
@@ -87,7 +89,7 @@ export interface RatingRankUpdate {
 }
 
 export interface MovieStore {
-  listMovies(): Promise<Movie[]>;
+  listMovies(mediaType?: MediaType): Promise<Movie[]>;
   getMovie(tmdbId: number): Promise<Movie | null>;
   listMovieCredits(tmdbIds: number[]): Promise<MovieCredit[]>;
   upsertMovies(movies: Movie[]): Promise<void>;
@@ -250,9 +252,10 @@ class LocalJsonStore implements MovieStore {
     await fs.writeFile(this.filePath, JSON.stringify(state, null, 2));
   }
 
-  async listMovies() {
+  async listMovies(mediaType?: MediaType) {
     const state = await this.read();
-    return state.movies;
+    if (!mediaType) return state.movies;
+    return state.movies.filter((movie) => (movie.mediaType ?? "movie") === mediaType);
   }
 
   async getMovie(tmdbId: number) {
@@ -331,7 +334,7 @@ class LocalJsonStore implements MovieStore {
           rating,
           verdict: options?.verdict ?? null,
           rankScore: options?.rankScore ?? null,
-          mediaType: "movie",
+          mediaType: mediaTypeOfId(tmdbId),
           createdAt: current,
           updatedAt: current
         };
@@ -789,6 +792,7 @@ function dbMovieToMovie(row: Record<string, unknown>, credits?: Movie["credits"]
         : null;
   const movie: Movie = {
     tmdbId: Number(row.tmdb_id),
+    mediaType: (row.media_type as MediaType | null) ?? "movie",
     title: String(row.title),
     originalTitle: (row.original_title as string | null) ?? null,
     originalLanguage,
@@ -944,6 +948,7 @@ function dbEnrichmentToMovieEnrichment(row: Record<string, unknown>): MovieEnric
 
 const MOVIE_SELECT_COLUMNS = [
   "tmdb_id",
+  "media_type",
   "title",
   "original_title",
   "original_language",
@@ -991,7 +996,13 @@ class SupabaseMovieStore implements MovieStore {
     return rows;
   }
 
-  async listMovies() {
+  async listMovies(mediaType?: MediaType) {
+    const all = await this.listAllMovies();
+    if (!mediaType) return all;
+    return all.filter((movie) => (movie.mediaType ?? "movie") === mediaType);
+  }
+
+  private async listAllMovies() {
     if (this.moviesCache && this.moviesCache.expiresAt > Date.now()) {
       return this.moviesCache.movies;
     }
@@ -999,8 +1010,8 @@ class SupabaseMovieStore implements MovieStore {
     const pageSize = 1000;
     const rows: Record<string, unknown>[] = [];
 
-    for (let from = 0; from < MAX_STARTER_POOL_MOVIES; from += pageSize) {
-      const to = Math.min(from + pageSize - 1, MAX_STARTER_POOL_MOVIES - 1);
+    for (let from = 0; from < MAX_CATALOG_ROWS; from += pageSize) {
+      const to = Math.min(from + pageSize - 1, MAX_CATALOG_ROWS - 1);
       const { data, error } = await this.db
         .from("movies")
         .select(MOVIE_SELECT_COLUMNS)
@@ -1090,6 +1101,8 @@ class SupabaseMovieStore implements MovieStore {
     const currentTime = now();
     const movieRows = enriched.map((movie) => ({
         tmdb_id: movie.tmdbId,
+        media_type: movie.mediaType ?? mediaTypeOfId(movie.tmdbId),
+        source_id: sourceIdOf(movie.tmdbId),
         title: movie.title,
         original_title: movie.originalTitle ?? null,
         original_language: movie.originalLanguage ?? "en",
@@ -1197,7 +1210,13 @@ class SupabaseMovieStore implements MovieStore {
 
   async upsertRating(tmdbId: number, rating: RatingValue, profileId = DEFAULT_PROFILE_ID, options?: RatingUpsertOptions) {
     await this.ensureProfile(profileId);
-    const payload: Record<string, unknown> = { profile_id: profileId, tmdb_id: tmdbId, rating, updated_at: now() };
+    const payload: Record<string, unknown> = {
+      profile_id: profileId,
+      tmdb_id: tmdbId,
+      rating,
+      media_type: mediaTypeOfId(tmdbId),
+      updated_at: now()
+    };
     if (options?.verdict !== undefined) payload.verdict = options.verdict;
     if (options?.rankScore !== undefined) payload.rank_score = options.rankScore;
     const { data, error } = await this.db.from("ratings").upsert(payload, { onConflict: "profile_id,tmdb_id" }).select("*").single();

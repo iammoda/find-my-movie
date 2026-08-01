@@ -1,7 +1,6 @@
 import {
   DEFAULT_PROFILE_ID,
-  MIN_CANDIDATE_VOTE_COUNT,
-  MIN_PRIMARY_VOTE_COUNT,
+  MEDIA_PROFILES,
   MIN_RECOMMENDATION_VOTE_AVERAGE,
   MIN_STABLE_RELEASE_DAYS,
   NEGATIVE_RATINGS,
@@ -29,6 +28,7 @@ import {
 import { TAXONOMY_VERSION, taxonomyLabelFor } from "@/lib/taxonomy";
 import type {
   Movie,
+  MediaType,
   MovieEmbedding,
   MovieExposure,
   Rating,
@@ -392,6 +392,10 @@ function shallowOneOffMultiplier(signal: TasteSignal) {
   return signal.count >= 2 ? 0.85 : 0.2;
 }
 
+function mediaProfileFor(movie: Movie) {
+  return MEDIA_PROFILES[movie.mediaType ?? "movie"];
+}
+
 function candidateUsable(movie: Movie) {
   // Hard gate only: displayable + minimally credible. Quality/language/recency are
   // soft-scored below so acclaimed foreign films, gems, and new releases can surface.
@@ -399,7 +403,7 @@ function candidateUsable(movie: Movie) {
     !movie.adult &&
     Boolean(movie.posterPath) &&
     Boolean(movie.overview) &&
-    movie.voteCount >= MIN_CANDIDATE_VOTE_COUNT
+    movie.voteCount >= mediaProfileFor(movie).minCandidateVoteCount
   );
 }
 
@@ -412,7 +416,7 @@ function candidateUsable(movie: Movie) {
 const FAMILIARITY_WEIGHT = 0.9;
 
 function familiarityScore(movie: Movie): number {
-  const voteReach = Math.min(1, Math.log10(1 + Math.max(0, movie.voteCount)) / 4);
+  const voteReach = Math.min(1, Math.log10(1 + Math.max(0, movie.voteCount)) / mediaProfileFor(movie).voteReachNorm);
   const popularityReach = Math.min(1, Math.log10(1 + Math.max(0, movie.popularity)) / 3);
   return voteReach * 0.6 + popularityReach * 0.4;
 }
@@ -424,12 +428,13 @@ function familiarityScore(movie: Movie): number {
  */
 function candidateSoftPenalty(movie: Movie): number {
   let penalty = 0;
+  const minPrimaryVotes = mediaProfileFor(movie).minPrimaryVoteCount;
 
   if (movie.voteAverage < MIN_RECOMMENDATION_VOTE_AVERAGE) {
     penalty += (MIN_RECOMMENDATION_VOTE_AVERAGE - movie.voteAverage) * 0.35;
   }
-  if (movie.voteCount < MIN_PRIMARY_VOTE_COUNT) {
-    penalty += Math.min(2, Math.log10(MIN_PRIMARY_VOTE_COUNT / Math.max(1, movie.voteCount))) * 0.8;
+  if (movie.voteCount < minPrimaryVotes) {
+    penalty += Math.min(2, Math.log10(minPrimaryVotes / Math.max(1, movie.voteCount))) * 0.8;
   }
   if (!isPrimaryAudienceMovie(movie)) {
     penalty += NON_PRIMARY_LANGUAGE_PENALTY;
@@ -686,8 +691,7 @@ export function semanticContextForMovie(
   };
 }
 
-/** Familiarity guarantee: at most this many picks per run below the vote threshold. */
-const OBSCURE_VOTE_THRESHOLD = 3000;
+/** Familiarity guarantee: at most this many picks per run below the media's vote threshold. */
 const MAX_OBSCURE_PICKS = 2;
 
 function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandidate[] {
@@ -732,7 +736,7 @@ function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandida
   let obscureCount = 0;
   for (const candidate of ranked) {
     if (final.length >= limit) break;
-    const obscure = candidate.movie.voteCount < OBSCURE_VOTE_THRESHOLD;
+    const obscure = candidate.movie.voteCount < mediaProfileFor(candidate.movie).obscureVoteThreshold;
     if (obscure && obscureCount >= MAX_OBSCURE_PICKS) {
       skippedObscure.push(candidate);
       continue;
@@ -853,6 +857,8 @@ export function scoreCandidateWithModel(
 export interface RecommendationOptions {
   genreId?: number;
   genreName?: string;
+  /** Candidate media type; the taste model still learns from all rated media. */
+  mediaType?: MediaType;
 }
 
 export async function generateRecommendations(
@@ -891,8 +897,10 @@ export async function generateRecommendations(
     .map((exposure) => exposure.tmdbId);
 
   const genreId = options.genreId ?? null;
+  const mediaType = options.mediaType ?? "movie";
   const candidates = movies.filter(
     (movie) =>
+      (movie.mediaType ?? "movie") === mediaType &&
       candidateUsable(movie) &&
       !ratedIds.has(movie.tmdbId) &&
       !hiddenIds.has(movie.tmdbId) &&
@@ -1042,6 +1050,7 @@ export async function generateRecommendations(
       recommendationAverage: averageRatedScoreForSource(ratings, recommendationExposureIds),
       metadata: {
         candidateCount: candidates.length,
+        mediaType,
         genreFilter: genreId != null ? { id: genreId, name: options.genreName ?? null } : null,
         ratedCount: ratings.length,
         positiveCount: readiness.positives,

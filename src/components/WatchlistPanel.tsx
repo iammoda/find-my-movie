@@ -109,7 +109,10 @@ export function WatchlistPanel({ version, onRate }: WatchlistPanelProps) {
                   <MoviePoster movie={entry.movie} />
                 </div>
                 <div className="watchlist-body">
-                  <p className="recommendation-meta">{[year, entry.movie.genres.slice(0, 2).map((genre) => genre.name).join(", ")].filter(Boolean).join(" · ")}</p>
+                  <p className="recommendation-meta">
+                    {[year, entry.movie.genres.slice(0, 2).map((genre) => genre.name).join(", ")].filter(Boolean).join(" · ")}
+                    {entry.movie.mediaType === "tv" && <span className="media-chip">TV</span>}
+                  </p>
                   <h3>{entry.movie.title}</h3>
                   <p className="watchlist-prompt">Watched it? How was it?</p>
                   <div className="watchlist-actions" aria-label={`Rate ${entry.movie.title} after watching`}>

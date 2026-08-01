@@ -100,6 +100,52 @@ a {
   text-decoration: none;
 }
 
+.brand-group {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+}
+
+.media-switch {
+  display: inline-flex;
+  padding: 3px;
+  border: 1px solid rgba(147, 143, 158, 0.22);
+  border-radius: var(--radius-control);
+  background: var(--surface-container-high);
+}
+
+.media-switch a,
+.media-switch button {
+  padding: 4px 12px;
+  border: 0;
+  border-radius: calc(var(--radius-control) - 3px);
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.media-switch a.is-active,
+.media-switch button.is-active {
+  background: rgba(215, 185, 255, 0.16);
+  color: var(--primary);
+}
+
+.media-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 0 6px;
+  border: 1px solid rgba(215, 185, 255, 0.28);
+  border-radius: var(--radius-control);
+  color: var(--primary);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+}
+
 .top-nav {
   display: flex;
   align-items: center;

@@ -175,6 +175,18 @@ export function deriveTasteFacts(movie: Movie): TasteFact[] {
     add("cast", actor, 0.45, "tmdb");
   }
 
+  // TV: the media itself and its format (limited vs long-running) are taste
+  // signal - a shared movie+TV model uses these to learn per-media bias.
+  if (movie.mediaType === "tv") {
+    add("media", "tv", 1, "tmdb");
+    const payload = movie.sourcePayload as { number_of_seasons?: unknown; status?: unknown } | null | undefined;
+    const seasons = Number(payload?.number_of_seasons);
+    if (Number.isFinite(seasons) && seasons > 0) {
+      if (seasons <= 2) add("format", "limited_series", 1, "tmdb");
+      else if (seasons >= 6) add("format", "long_running_series", 1, "tmdb");
+    }
+  }
+
   const text = `${movie.title}. ${movie.overview} ${movie.keywords.join(" ")}`;
   for (const pattern of FACT_PATTERNS) {
     if (pattern.patterns.some((regex) => regex.test(text))) {

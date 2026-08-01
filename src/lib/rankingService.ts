@@ -11,6 +11,7 @@ import {
   sortedBucket
 } from "@/lib/ranking";
 import type { MovieStore, RatingRankUpdate } from "@/lib/store";
+import { mediaTypeOfId } from "@/lib/mediaId";
 import type { Comparison, Rating, Verdict } from "@/lib/types";
 
 /**
@@ -55,6 +56,12 @@ function comparedIdSet(comparisons: Comparison[]): Set<number> {
   return ids;
 }
 
+/** Placement buckets never cross media: a movie is only ever compared against movies, TV against TV. */
+function sameMediaRatings(ratings: Rating[], tmdbId: number): Rating[] {
+  const mediaType = mediaTypeOfId(tmdbId);
+  return ratings.filter((rating) => mediaTypeOfId(rating.tmdbId) === mediaType);
+}
+
 export async function beginPlacement(
   store: MovieStore,
   tmdbId: number,
@@ -63,7 +70,7 @@ export async function beginPlacement(
 ): Promise<BeginPlacementResult> {
   const [ratings, comparisons] = await Promise.all([store.listRatings(profileId), store.listComparisons(profileId)]);
   const previousRating = ratings.find((rating) => rating.tmdbId === tmdbId) ?? null;
-  const bucket = sortedBucket(ratings, verdict, tmdbId, comparedIdSet(comparisons));
+  const bucket = sortedBucket(sameMediaRatings(ratings, tmdbId), verdict, tmdbId, comparedIdSet(comparisons));
 
   const provisionalScore = bandMidpoint(verdict);
   const rating = await store.upsertRating(tmdbId, legacyRatingFor(verdict, provisionalScore), profileId, {
@@ -105,7 +112,7 @@ export async function advancePlacement(
   }
 
   const verdict = rating.verdict;
-  const bucket = sortedBucket(ratings, verdict, tmdbId, comparedIdSet(comparisons));
+  const bucket = sortedBucket(sameMediaRatings(ratings, tmdbId), verdict, tmdbId, comparedIdSet(comparisons));
 
   // Replay the session's comparisons, resolving each opponent by id. Steps whose
   // opponent left the bucket (deleted, re-rated) or drifted outside the current

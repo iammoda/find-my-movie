@@ -1,14 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { getPublicStore } from "@/lib/auth";
-import {
-  MIN_BROWSE_POPULARITY,
-  MIN_BROWSE_VOTE_COUNT,
-  MIN_GENRE_VOTE_COUNT,
-  RUNTIME_STARTER_POOL_MOVIES,
-  MIN_STABLE_RELEASE_DAYS,
-  MIN_TOP_RATED_VOTE_COUNT
-} from "@/lib/constants";
+import { MEDIA_PROFILES, RUNTIME_STARTER_POOL_MOVIES, MIN_STABLE_RELEASE_DAYS } from "@/lib/constants";
 import { handledMovieIds } from "@/lib/handled";
 import { isPrimaryAudienceMovie } from "@/lib/language";
 import { publicMovie } from "@/lib/publicMovie";
@@ -18,12 +11,14 @@ import { type MovieStore } from "@/lib/store";
 import { buildUncertaintyEstimator, loadTasteModel, predictTasteScore, predictedRankScore } from "@/lib/tasteModel";
 import { buildTasteTestQueue, usableTasteTestMovie, type TasteTestQueueOptions } from "@/lib/tasteTest";
 import { fetchBrowseMovies, fetchCatalogExpansion, fetchStarterPool } from "@/lib/tmdb";
-import type { AppealSignal, Movie, MovieExposure, Rating, WatchlistItem } from "@/lib/types";
+import { fetchBrowseTv, fetchTvCatalogExpansion, fetchTvStarterPool } from "@/lib/tmdbTv";
+import type { AppealSignal, MediaType, Movie, MovieExposure, Rating, WatchlistItem } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
 const querySchema = z.object({
   category: z.enum(["taste_test", "popular", "top_rated", "genre"]).default("taste_test"),
+  mediaType: z.enum(["movie", "tv"]).default("movie"),
   genreId: z.coerce.number().optional(),
   page: z.coerce.number().int().positive().default(1)
 });
@@ -44,19 +39,22 @@ const QUEUE_REPLENISH_THRESHOLD = 30;
 const CATALOG_EXPANSION_MIN_INTERVAL_MS = 10 * 60 * 1000;
 const CATALOG_EXPANSION_TARGET = 400;
 const CATALOG_EXPANSION_PAGE_WINDOW = 500;
-let lastCatalogExpansionAt = 0;
+const lastCatalogExpansionAt: Record<MediaType, number> = { movie: 0, tv: 0 };
 
-function maybeExpandCatalog(store: MovieStore, catalogSize: number) {
+function maybeExpandCatalog(store: MovieStore, mediaType: MediaType, catalogSize: number) {
   const now = Date.now();
-  if (now - lastCatalogExpansionAt < CATALOG_EXPANSION_MIN_INTERVAL_MS) return;
-  lastCatalogExpansionAt = now;
+  if (now - lastCatalogExpansionAt[mediaType] < CATALOG_EXPANSION_MIN_INTERVAL_MS) return;
+  lastCatalogExpansionAt[mediaType] = now;
   void (async () => {
     try {
       const pageOffset = Math.floor(catalogSize / CATALOG_EXPANSION_PAGE_WINDOW);
-      const fresh = await fetchCatalogExpansion(pageOffset, CATALOG_EXPANSION_TARGET);
+      const fresh =
+        mediaType === "tv"
+          ? await fetchTvCatalogExpansion(pageOffset, CATALOG_EXPANSION_TARGET)
+          : await fetchCatalogExpansion(pageOffset, CATALOG_EXPANSION_TARGET);
       if (fresh.length) {
         await store.upsertMovies(fresh);
-        console.info(`Catalog expansion ingested ${fresh.length} movies (page offset ${pageOffset})`);
+        console.info(`Catalog expansion ingested ${fresh.length} ${mediaType} titles (page offset ${pageOffset})`);
       }
     } catch (error) {
       console.warn("Catalog expansion failed", error instanceof Error ? error.message : error);
@@ -155,6 +153,8 @@ export async function GET(request: Request) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid browse query", issues: parsed.error.flatten() }, { status: 400 });
   }
+  const mediaType = parsed.data.mediaType;
+  const profile = MEDIA_PROFILES[mediaType];
 
   // Signed in: deck personalization reads the session profile.
   // Signed out: the empty "anon" profile, so decks behave like a fresh user.
@@ -166,39 +166,43 @@ export async function GET(request: Request) {
       store.listExposures(),
       store.listAppealSignals(),
       store.listWatchlist(),
-      store.listMovies()
+      store.listMovies(mediaType)
     ]);
     let cached = initialCached;
     if (cached.length < 400) {
-      const starterPool = await fetchStarterPool(RUNTIME_STARTER_POOL_MOVIES);
+      const starterPool =
+        mediaType === "tv" ? await fetchTvStarterPool(RUNTIME_STARTER_POOL_MOVIES) : await fetchStarterPool(RUNTIME_STARTER_POOL_MOVIES);
       await store.upsertMovies(starterPool);
-      cached = await store.listMovies();
+      cached = await store.listMovies(mediaType);
     }
 
     const modelSignals = await deckModelSignals(store, cached, ratings, exposures, appealSignals, watchlist);
     const movies = buildTasteTestQueue(cached, ratings, exposures, 80, { appealSignals, ...modelSignals });
-    if (movies.length < QUEUE_REPLENISH_THRESHOLD) maybeExpandCatalog(store, cached.length);
+    if (movies.length < QUEUE_REPLENISH_THRESHOLD) maybeExpandCatalog(store, mediaType, cached.length);
     return NextResponse.json({ movies: movies.map(publicMovie), page: parsed.data.page, source: parsed.data.category });
   }
 
-  const fetched = await fetchBrowseMovies(parsed.data.category, parsed.data.page, parsed.data.genreId);
+  const fetched =
+    mediaType === "tv"
+      ? await fetchBrowseTv(parsed.data.category, parsed.data.page, parsed.data.genreId)
+      : await fetchBrowseMovies(parsed.data.category, parsed.data.page, parsed.data.genreId);
   await store.upsertMovies(fetched);
 
   const [ratings, exposures, appealSignals, cached] = await Promise.all([
     store.listRatings(),
     store.listExposures(),
     store.listAppealSignals(),
-    store.listMovies()
+    store.listMovies(mediaType)
   ]);
   const handledIds = handledMovieIds(ratings, exposures, appealSignals);
   const fetchedIds = new Set(fetched.map((movie) => movie.tmdbId));
 
   const minVotes =
     parsed.data.category === "top_rated"
-      ? MIN_TOP_RATED_VOTE_COUNT
+      ? profile.minTopRatedVoteCount
       : parsed.data.category === "genre"
-        ? MIN_GENRE_VOTE_COUNT
-        : MIN_BROWSE_VOTE_COUNT;
+        ? profile.minGenreVoteCount
+        : profile.minBrowseVoteCount;
   const minReleaseAgeDays = parsed.data.category === "popular" ? 0 : MIN_STABLE_RELEASE_DAYS;
 
   let movies = cached.filter(
@@ -209,7 +213,7 @@ export async function GET(request: Request) {
       Boolean(movie.posterPath) &&
       Boolean(movie.overview) &&
       movie.voteCount >= minVotes &&
-      movie.popularity >= MIN_BROWSE_POPULARITY &&
+      movie.popularity >= profile.minBrowsePopularity &&
       isReleasedAtLeastDaysAgo(movie.releaseDate, minReleaseAgeDays) &&
       isPrimaryAudienceMovie(movie)
   );

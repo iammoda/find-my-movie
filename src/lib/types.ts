@@ -26,7 +26,9 @@ export type TasteKind =
   | "period"
   | "setting"
   | "cast"
-  | "director";
+  | "director"
+  | "format"
+  | "media";
 
 export interface Genre {
   id: number;
@@ -57,7 +59,10 @@ export interface MovieTasteTrait {
 }
 
 export interface Movie {
+  /** Canonical catalog id: TMDB movie id, or TV_ID_OFFSET + TMDB tv id (see lib/mediaId). */
   tmdbId: number;
+  /** Defaults to "movie" when absent (all pre-TV rows). */
+  mediaType?: MediaType;
   title: string;
   originalTitle?: string | null;
   originalLanguage?: string | null;

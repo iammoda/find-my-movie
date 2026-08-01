@@ -9,7 +9,7 @@ import type { MovieStore } from "@/lib/store";
 export function scopedStore(store: MovieStore, profileId: string): MovieStore {
   return {
     // Catalog + pipeline methods (not profile-scoped): straight passthroughs.
-    listMovies: () => store.listMovies(),
+    listMovies: (mediaType) => store.listMovies(mediaType),
     getMovie: (tmdbId) => store.getMovie(tmdbId),
     listMovieCredits: (tmdbIds) => store.listMovieCredits(tmdbIds),
     upsertMovies: (movies) => store.upsertMovies(movies),
