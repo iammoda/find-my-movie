@@ -1,8 +1,9 @@
 import {
-  applyComparisonResult,
+  applyComparisonAtIndex,
   bandMidpoint,
   initialBounds,
   legacyRatingFor,
+  MAX_COMPARISON_ROUNDS,
   nextOpponentIndex,
   opponentAdjustment,
   placementIndex,
@@ -10,15 +11,20 @@ import {
   sortedBucket
 } from "@/lib/ranking";
 import type { MovieStore, RatingRankUpdate } from "@/lib/store";
-import type { Rating, Verdict } from "@/lib/types";
+import type { Comparison, Rating, Verdict } from "@/lib/types";
 
 /**
  * Stateless placement flow for the comparative ranking instrument.
  *
  * The client accumulates the comparison steps for the movie being placed and sends the
- * full list on every request; the server replays them against the (stable) bucket order
- * to derive bounds. No writes besides the provisional rating happen until placement is
- * final, so replays are deterministic within a session.
+ * full list on every request; the server replays them against the bucket - resolving
+ * each opponent by id, so bucket changes between requests (another rating, an undo, a
+ * mid-session "haven't seen" deletion) skip the affected step instead of silently
+ * recording a comparison against a different movie.
+ *
+ * Opponents are drawn only from confirmed placements (see confirmedPlacement): rows
+ * still sitting untouched at their seeded band midpoint are never shown, because they
+ * are disproportionately movies the user never actually saw.
  */
 
 export interface ComparisonStep {
@@ -40,15 +46,24 @@ export interface BeginPlacementResult {
   placement: PlacementState;
 }
 
+function comparedIdSet(comparisons: Comparison[]): Set<number> {
+  const ids = new Set<number>();
+  for (const comparison of comparisons) {
+    ids.add(comparison.winnerTmdbId);
+    ids.add(comparison.loserTmdbId);
+  }
+  return ids;
+}
+
 export async function beginPlacement(
   store: MovieStore,
   tmdbId: number,
   verdict: Verdict,
   profileId?: string
 ): Promise<BeginPlacementResult> {
-  const ratings = await store.listRatings(profileId);
+  const [ratings, comparisons] = await Promise.all([store.listRatings(profileId), store.listComparisons(profileId)]);
   const previousRating = ratings.find((rating) => rating.tmdbId === tmdbId) ?? null;
-  const bucket = sortedBucket(ratings, verdict, tmdbId);
+  const bucket = sortedBucket(ratings, verdict, tmdbId, comparedIdSet(comparisons));
 
   const provisionalScore = bandMidpoint(verdict);
   const rating = await store.upsertRating(tmdbId, legacyRatingFor(verdict, provisionalScore), profileId, {
@@ -83,23 +98,31 @@ export async function advancePlacement(
   steps: ComparisonStep[],
   profileId?: string
 ): Promise<AdvancePlacementResult> {
-  const ratings = await store.listRatings(profileId);
+  const [ratings, comparisons] = await Promise.all([store.listRatings(profileId), store.listComparisons(profileId)]);
   const rating = ratings.find((item) => item.tmdbId === tmdbId);
   if (!rating?.verdict) {
     throw new Error(`No verdict found for movie ${tmdbId}; submit a verdict before comparisons.`);
   }
 
   const verdict = rating.verdict;
-  const bucket = sortedBucket(ratings, verdict, tmdbId);
+  const bucket = sortedBucket(ratings, verdict, tmdbId, comparedIdSet(comparisons));
 
-  // Replay the session's comparisons to rebuild bounds and resolve each opponent.
+  // Replay the session's comparisons, resolving each opponent by id. Steps whose
+  // opponent left the bucket (deleted, re-rated) or drifted outside the current
+  // window are skipped - they narrow nothing and consume no round.
   let bounds = initialBounds(bucket.length);
-  const resolved: Array<{ opponent: Rating; preferredNew: boolean }> = [];
+  const resolved: Array<{ opponent: Rating; preferredNew: boolean; stale: boolean }> = [];
   for (const step of steps) {
-    const opponentIndex = nextOpponentIndex(bounds);
-    if (opponentIndex == null) break;
-    resolved.push({ opponent: bucket[opponentIndex], preferredNew: step.preferredNew });
-    bounds = applyComparisonResult(bounds, step.preferredNew);
+    if (bounds.lo >= bounds.hi || bounds.round >= MAX_COMPARISON_ROUNDS) break;
+    const opponentIndex = bucket.findIndex((item) => item.tmdbId === step.opponentTmdbId);
+    if (opponentIndex === -1) continue;
+    const narrowed = applyComparisonAtIndex(bounds, opponentIndex, step.preferredNew);
+    if (!narrowed) {
+      resolved.push({ opponent: bucket[opponentIndex], preferredNew: step.preferredNew, stale: true });
+      continue;
+    }
+    resolved.push({ opponent: bucket[opponentIndex], preferredNew: step.preferredNew, stale: false });
+    bounds = narrowed;
   }
 
   // Persist only the newest comparison; earlier ones were recorded by previous requests.
@@ -129,7 +152,8 @@ export async function advancePlacement(
   const rankScore = rankScoreForPlacement(bucket, index, verdict);
 
   const nudges: RatingRankUpdate[] = [];
-  for (const { opponent, preferredNew } of resolved) {
+  for (const { opponent, preferredNew, stale } of resolved) {
+    if (stale) continue;
     const adjustment = opponentAdjustment(opponent, !preferredNew);
     if (adjustment) nudges.push(adjustment);
   }

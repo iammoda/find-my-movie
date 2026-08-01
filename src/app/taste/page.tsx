@@ -93,6 +93,35 @@ export default function TastePage() {
     [comparison, comparisonBusy]
   );
 
+  const markOpponentNotSeen = useCallback(async () => {
+    if (!comparison || comparisonBusy) return;
+    setComparisonBusy(true);
+    try {
+      const response = await fetch("/api/comparisons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tmdbId: comparison.movie.tmdbId,
+          comparisons: comparison.steps,
+          notSeenOpponentTmdbId: comparison.opponent.tmdbId
+        })
+      });
+      if (!response.ok) {
+        setComparison(null);
+        return;
+      }
+      const data = (await response.json()) as ComparisonResponse;
+      setRatingsVersion((current) => current + 1);
+      if (data.placement.done || !data.opponent) {
+        setComparison(null);
+      } else {
+        setComparison({ ...comparison, opponent: data.opponent, round: data.placement.round });
+      }
+    } finally {
+      setComparisonBusy(false);
+    }
+  }, [comparison, comparisonBusy]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setComparison(null);
@@ -129,6 +158,7 @@ export default function TastePage() {
           maxRounds={MAX_COMPARISON_ROUNDS}
           busy={comparisonBusy}
           onPick={(preferredNew) => void pickComparison(preferredNew)}
+          onOpponentNotSeen={() => void markOpponentNotSeen()}
           onSkip={() => setComparison(null)}
         />
       )}

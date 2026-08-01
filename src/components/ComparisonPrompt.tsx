@@ -12,6 +12,8 @@ interface ComparisonPromptProps {
   maxRounds: number;
   busy?: boolean;
   onPick: (preferredNew: boolean) => void;
+  /** The user has never seen the opponent: remove it and fetch the next one. */
+  onOpponentNotSeen: () => void;
   onSkip: () => void;
 }
 
@@ -20,7 +22,7 @@ function promptCopy(verdict: Verdict) {
   return "Which did you prefer?";
 }
 
-export function ComparisonPrompt({ movie, opponent, verdict, round, maxRounds, busy, onPick, onSkip }: ComparisonPromptProps) {
+export function ComparisonPrompt({ movie, opponent, verdict, round, maxRounds, busy, onPick, onOpponentNotSeen, onSkip }: ComparisonPromptProps) {
   return (
     <div className="reason-modal-scrim" role="presentation" onClick={onSkip}>
       <section
@@ -66,6 +68,15 @@ export function ComparisonPrompt({ movie, opponent, verdict, round, maxRounds, b
             </button>
           </div>
           <div className="reason-modal-actions">
+            <button
+              type="button"
+              className="secondary-button comparison-not-seen"
+              onClick={onOpponentNotSeen}
+              disabled={busy}
+              aria-label={`I haven't seen ${opponent.title}`}
+            >
+              Haven&apos;t seen &ldquo;{opponent.title}&rdquo;
+            </button>
             <button type="button" className="secondary-button" onClick={onSkip} disabled={busy}>
               Skip - place it for me
             </button>

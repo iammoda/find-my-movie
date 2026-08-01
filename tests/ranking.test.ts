@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  applyComparisonAtIndex,
   applyComparisonResult,
   bandMidpoint,
+  confirmedPlacement,
   initialBounds,
   legacyRatingFor,
   MAX_COMPARISON_ROUNDS,
@@ -91,6 +93,40 @@ describe("sortedBucket", () => {
     const first = rankedRating(10, "loved", 7.5);
     const second = rankedRating(11, "loved", 7.5);
     expect(sortedBucket([second, first], "loved").map((rating) => rating.tmdbId)).toEqual([10, 11]);
+  });
+
+  it("excludes unconfirmed midpoint rows from the opponent pool", () => {
+    const ratings = [
+      rankedRating(1, "fine", bandMidpoint("fine")), // seeded, never compared: excluded
+      rankedRating(2, "fine", bandMidpoint("fine")), // seeded but compared before: included
+      rankedRating(3, "fine", 5.6) // moved off the midpoint: included
+    ];
+    const comparedIds = new Set([2]);
+
+    expect(sortedBucket(ratings, "fine", undefined, comparedIds).map((rating) => rating.tmdbId)).toEqual([3, 2]);
+    // Without comparison data the filter is off (legacy call sites/tests).
+    expect(sortedBucket(ratings, "fine").length).toBe(3);
+  });
+});
+
+describe("confirmedPlacement", () => {
+  it("confirms via comparison participation or a moved score", () => {
+    expect(confirmedPlacement(rankedRating(1, "fine", bandMidpoint("fine")), new Set([1]))).toBe(true);
+    expect(confirmedPlacement(rankedRating(2, "fine", 5.6), new Set())).toBe(true);
+    expect(confirmedPlacement(rankedRating(3, "fine", bandMidpoint("fine")), new Set())).toBe(false);
+    expect(confirmedPlacement(rankedRating(4, "loved", bandMidpoint("loved")), new Set())).toBe(false);
+  });
+});
+
+describe("applyComparisonAtIndex", () => {
+  it("narrows around the opponent's actual index", () => {
+    expect(applyComparisonAtIndex({ lo: 0, hi: 8, round: 0 }, 3, true)).toEqual({ lo: 0, hi: 3, round: 1 });
+    expect(applyComparisonAtIndex({ lo: 0, hi: 8, round: 0 }, 3, false)).toEqual({ lo: 4, hi: 8, round: 1 });
+  });
+
+  it("rejects stale steps whose opponent left the current window", () => {
+    expect(applyComparisonAtIndex({ lo: 4, hi: 8, round: 1 }, 2, true)).toBeNull();
+    expect(applyComparisonAtIndex({ lo: 0, hi: 3, round: 1 }, 5, false)).toBeNull();
   });
 });
 

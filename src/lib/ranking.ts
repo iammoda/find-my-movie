@@ -67,12 +67,32 @@ export function legacyRatingFor(verdict: Verdict, rankScore?: number | null): Ra
   return "skip";
 }
 
-/** Ratings in a verdict bucket, best first. Stable tie-break on updatedAt then tmdbId. */
-export function sortedBucket(ratings: Rating[], verdict: Verdict, excludeTmdbId?: number): Rating[] {
+/**
+ * A rating's position is informative (safe to compare against) when a real
+ * comparison ever touched it, or its score has moved off the seeded band
+ * midpoint. Rows still sitting untouched at the exact midpoint are either
+ * migrated legacy ratings (often movies the user never saw) or placements the
+ * user skipped - both are useless binary-search anchors.
+ */
+export function confirmedPlacement(rating: Rating, comparedIds: Set<number>): boolean {
+  if (comparedIds.has(rating.tmdbId)) return true;
+  if (!rating.verdict || rating.rankScore == null) return false;
+  return rating.rankScore !== bandMidpoint(rating.verdict);
+}
+
+/**
+ * Ratings in a verdict bucket, best first. Stable tie-break on updatedAt then
+ * tmdbId. When `comparedIds` is given, only confirmed placements are included
+ * so unconfirmed (possibly unseen) movies never become comparison opponents.
+ */
+export function sortedBucket(ratings: Rating[], verdict: Verdict, excludeTmdbId?: number, comparedIds?: Set<number>): Rating[] {
   return ratings
     .filter(
       (rating) =>
-        rating.verdict === verdict && rating.rankScore != null && rating.tmdbId !== excludeTmdbId
+        rating.verdict === verdict &&
+        rating.rankScore != null &&
+        rating.tmdbId !== excludeTmdbId &&
+        (comparedIds == null || confirmedPlacement(rating, comparedIds))
     )
     .sort((a, b) => {
       if (b.rankScore! !== a.rankScore!) return b.rankScore! - a.rankScore!;
@@ -106,6 +126,19 @@ export function applyComparisonResult(bounds: PlacementBounds, preferredNew: boo
   return preferredNew
     ? { lo: bounds.lo, hi: mid, round: bounds.round + 1 }
     : { lo: mid + 1, hi: bounds.hi, round: bounds.round + 1 };
+}
+
+/**
+ * Narrow the bounds around a specific opponent's bucket index (replay by id).
+ * Returns null for stale steps - opponent outside the open window, e.g. after
+ * a mid-session "haven't seen" deletion reshuffled the bucket - so they are
+ * skipped instead of corrupting the bounds.
+ */
+export function applyComparisonAtIndex(bounds: PlacementBounds, opponentIndex: number, preferredNew: boolean): PlacementBounds | null {
+  if (opponentIndex < bounds.lo || opponentIndex >= bounds.hi) return null;
+  return preferredNew
+    ? { lo: bounds.lo, hi: opponentIndex, round: bounds.round + 1 }
+    : { lo: opponentIndex + 1, hi: bounds.hi, round: bounds.round + 1 };
 }
 
 /** Final insertion index for the current bounds (midpoint when rounds ran out). */

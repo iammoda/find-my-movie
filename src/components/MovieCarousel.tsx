@@ -434,6 +434,42 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
     [comparison, comparisonBusy]
   );
 
+  const markOpponentNotSeen = useCallback(async () => {
+    if (!comparison || comparisonBusy) return;
+    setComparisonBusy(true);
+    try {
+      const removedId = comparison.opponent.tmdbId;
+      const response = await fetch("/api/comparisons", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          tmdbId: comparison.movie.tmdbId,
+          comparisons: comparison.steps,
+          notSeenOpponentTmdbId: removedId
+        })
+      });
+      if (!response.ok) {
+        setComparison(null);
+        return;
+      }
+      const data = (await response.json()) as ComparisonResponse;
+      setNotSeenIds((current) => new Set(current).add(removedId));
+      setRatings((current) => {
+        const next = new Map(current);
+        next.delete(removedId);
+        if (data.rating) next.set(data.rating.tmdbId, data.rating);
+        return next;
+      });
+      if (data.placement.done || !data.opponent) {
+        setComparison(null);
+      } else {
+        setComparison({ ...comparison, opponent: data.opponent, round: data.placement.round });
+      }
+    } finally {
+      setComparisonBusy(false);
+    }
+  }, [comparison, comparisonBusy]);
+
   const skipComparison = useCallback(() => {
     setComparison(null);
   }, []);
@@ -683,6 +719,7 @@ export function MovieCarousel({ canRate = true }: { canRate?: boolean }) {
           maxRounds={MAX_COMPARISON_ROUNDS}
           busy={comparisonBusy}
           onPick={(preferredNew) => void pickComparison(preferredNew)}
+          onOpponentNotSeen={() => void markOpponentNotSeen()}
           onSkip={skipComparison}
         />
       )}
