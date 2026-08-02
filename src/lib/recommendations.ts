@@ -14,10 +14,13 @@ import { isPrimaryAudienceMovie } from "@/lib/language";
 import { baselineScore, isReleasedAtLeastDaysAgo, qualityScore, releaseDecade } from "@/lib/quality";
 import { VERDICT_BANDS } from "@/lib/ranking";
 import { ratingWeight, recommendationReadiness } from "@/lib/rating";
+import { buildSeenProbability } from "@/lib/seenModel";
 import type { MovieStore } from "@/lib/store";
 import { FEATURE_TEXT_VERSION, deriveTasteFacts, factKey, isDeepFact } from "@/lib/taste";
+import { buildTasteModes, type ModeSample, type TasteMode } from "@/lib/tasteClusters";
 import {
   buildScoreCalibrator,
+  discoveryWeights,
   loadTasteModel,
   predictTasteScore,
   predictedRankScore,
@@ -63,7 +66,7 @@ interface TasteProfile {
   traitSpecificity: Map<string, number>;
 }
 
-interface ScoredCandidate {
+export interface ScoredCandidate {
   movie: Movie;
   score: number;
   baselineScore: number;
@@ -413,7 +416,10 @@ function candidateUsable(movie: Movie) {
  * recommendations of movies nobody has heard of erode trust even when the
  * taste match is real.
  */
-const FAMILIARITY_WEIGHT = 0.9;
+const FAMILIARITY_WEIGHT = 0.35;
+
+/** Penalty weight on P(already seen): recommending watched canon is utility-zero. */
+const SEEN_PENALTY_WEIGHT = 0.6;
 
 function familiarityScore(movie: Movie): number {
   const voteReach = Math.min(1, Math.log10(1 + Math.max(0, movie.voteCount)) / mediaProfileFor(movie).voteReachNorm);
@@ -693,8 +699,123 @@ export function semanticContextForMovie(
 
 /** Familiarity guarantee: at most this many picks per run below the media's vote threshold. */
 const MAX_OBSCURE_PICKS = 2;
+/** Structural anti-flood: no taste mode and no single genre may exceed this share of the slate. */
+const MAX_PICKS_PER_MODE = 3;
+const MAX_PICKS_PER_GENRE = 3;
+/** Candidates this embedding-similar to a selected pick (or a rated love) are franchise dupes. */
+const NEAR_DUP_SIMILARITY = 0.92;
+/** Minimum centroid similarity to claim a candidate for a mode; below it -> discovery slot. */
+const MODE_ASSIGN_MIN_SIMILARITY = 0.45;
 
-function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandidate[] {
+interface SlateContext {
+  modes: TasteMode[];
+  candidateEmbeddings: Map<number, number[]>;
+  /** Embeddings of loved rated titles, for franchise-of-watched suppression. */
+  lovedEmbeddings: number[][];
+}
+
+function cosine(a: number[], b: number[]): number {
+  const length = Math.min(a.length, b.length);
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let index = 0; index < length; index += 1) {
+    dot += a[index] * b[index];
+    normA += a[index] * a[index];
+    normB += b[index] * b[index];
+  }
+  const denominator = Math.sqrt(normA) * Math.sqrt(normB);
+  return denominator > 1e-9 ? dot / denominator : 0;
+}
+
+function assignMode(embedding: number[] | undefined, modes: TasteMode[]): number {
+  if (!embedding?.length || !modes.length) return -1;
+  let best = -1;
+  let bestSimilarity = MODE_ASSIGN_MIN_SIMILARITY;
+  for (let index = 0; index < modes.length; index += 1) {
+    const similarity = cosine(embedding, modes[index].centroid);
+    if (similarity > bestSimilarity) {
+      bestSimilarity = similarity;
+      best = index;
+    }
+  }
+  return best;
+}
+
+/**
+ * Mixture-of-modes slate assembly. Taste is multi-modal (comfort comedy
+ * nights vs tense thriller nights); a single ranked list collapses to the
+ * dominant mode and floods the slate with one flavor. Slots are allocated
+ * across modes proportional to their discovery-weighted share (hard cap per
+ * mode and per genre), franchise near-duplicates of selected picks and of
+ * already-watched loves are skipped, and each pick is labeled by its mode.
+ */
+export function assembleSlate(scored: ScoredCandidate[], limit: number, context: SlateContext): ScoredCandidate[] {
+  const ranked = [...scored].sort((a, b) => b.score - a.score || b.baselineScore - a.baselineScore);
+  const { modes, candidateEmbeddings, lovedEmbeddings } = context;
+
+  const modeCaps = modes.map((mode) => Math.min(MAX_PICKS_PER_MODE, Math.max(1, Math.round(mode.share * limit))));
+  const modeCounts = modes.map(() => 0);
+  const genreCounts = new Map<string, number>();
+  const selected: ScoredCandidate[] = [];
+  const selectedEmbeddings: number[][] = [];
+  const skipped: ScoredCandidate[] = [];
+  let obscureCount = 0;
+
+  const admissible = (candidate: ScoredCandidate, embedding: number[] | undefined, enforceModeCap: boolean, modeIndex: number) => {
+    const obscure = candidate.movie.voteCount < mediaProfileFor(candidate.movie).obscureVoteThreshold;
+    if (obscure && obscureCount >= MAX_OBSCURE_PICKS) return false;
+    if (candidate.movie.genres.some((genre) => (genreCounts.get(genre.name) ?? 0) >= MAX_PICKS_PER_GENRE)) return false;
+    if (enforceModeCap && modeIndex >= 0 && modeCounts[modeIndex] >= modeCaps[modeIndex]) return false;
+    if (embedding?.length) {
+      for (const other of selectedEmbeddings) {
+        if (cosine(embedding, other) >= NEAR_DUP_SIMILARITY) return false;
+      }
+      for (const loved of lovedEmbeddings) {
+        if (cosine(embedding, loved) >= NEAR_DUP_SIMILARITY) return false; // sequel/franchise of something already watched
+      }
+    }
+    return true;
+  };
+
+  const take = (candidate: ScoredCandidate, embedding: number[] | undefined, modeIndex: number) => {
+    if (candidate.movie.voteCount < mediaProfileFor(candidate.movie).obscureVoteThreshold) obscureCount += 1;
+    for (const genre of candidate.movie.genres) genreCounts.set(genre.name, (genreCounts.get(genre.name) ?? 0) + 1);
+    if (modeIndex >= 0) {
+      modeCounts[modeIndex] += 1;
+      const mode = modes[modeIndex];
+      candidate.breakdown.tasteMode = mode.label;
+      candidate.explanation = `For your ${mode.label} side - ${candidate.explanation ?? ""}`.trim();
+    }
+    selected.push(candidate);
+    if (embedding?.length) selectedEmbeddings.push(embedding);
+  };
+
+  for (const candidate of ranked) {
+    if (selected.length >= limit) break;
+    const embedding = candidateEmbeddings.get(candidate.movie.tmdbId);
+    const modeIndex = assignMode(embedding, modes);
+    if (!admissible(candidate, embedding, true, modeIndex)) {
+      skipped.push(candidate);
+      continue;
+    }
+    take(candidate, embedding, modeIndex);
+  }
+
+  // Backfill without the mode cap (genre/dup/obscure guards stay) when modes
+  // could not fill the slate.
+  for (const candidate of skipped) {
+    if (selected.length >= limit) break;
+    const embedding = candidateEmbeddings.get(candidate.movie.tmdbId);
+    const modeIndex = assignMode(embedding, modes);
+    if (!admissible(candidate, embedding, false, modeIndex)) continue;
+    take(candidate, embedding, modeIndex);
+  }
+
+  return selected;
+}
+
+export function applyDiversity(scored: ScoredCandidate[], limit: number): ScoredCandidate[] {
   const selected: ScoredCandidate[] = [];
   const genreCounts = new Map<string, number>();
   const decadeCounts = new Map<string, number>();
@@ -806,7 +927,8 @@ export function scoreCandidateWithModel(
   embedding: number[] | null | undefined,
   exposedIds: Set<number>,
   lovedContexts: LovedContext[],
-  calibrate?: ScoreCalibrator | null
+  calibrate?: ScoreCalibrator | null,
+  seenProbability?: number
 ): ScoredCandidate {
   const prediction = predictTasteScore(model, embedding, movie);
   const qScore = qualityScore(movie);
@@ -814,7 +936,12 @@ export function scoreCandidateWithModel(
   const noveltyScore = exposedIds.has(movie.tmdbId) ? -0.08 : 0.12;
   const softPenalty = candidateSoftPenalty(movie);
   const modelScore = prediction.score * MODEL_SCORE_WEIGHT;
-  const score = modelScore + qScore * 0.75 + familiarity * FAMILIARITY_WEIGHT + noveltyScore - softPenalty;
+  // Prospective utility, not retrospective rating: quality/familiarity are
+  // deliberately weak (the obscurity cap already guarantees recognizability),
+  // and titles the user has probably already watched are penalized -
+  // rating-accurate recommendations of canon they have seen are utility-zero.
+  const seenPenalty = (seenProbability ?? 0) * SEEN_PENALTY_WEIGHT;
+  const score = modelScore + qScore * 0.5 + familiarity * FAMILIARITY_WEIGHT + noveltyScore - softPenalty - seenPenalty;
   const nearest = nearestLovedTitles(embedding, lovedContexts);
   const rawRankScore = predictedRankScore(prediction);
   const displayRankScore = calibrate ? calibrate(rawRankScore) : rawRankScore;
@@ -955,18 +1082,46 @@ export async function generateRecommendations(
   let ratedContexts: RatedEmbeddingContext[] = [];
 
   const { model, signalEmbeddingsById } = await loadTasteModel(store, { movies, ratings, exposures, appealSignals, watchlist });
+  const movieByIdAll = new Map(movies.map((movie) => [movie.tmdbId, movie]));
 
-  // Candidate retrieval: the learned taste direction plus the user's top-loved movies.
+  // Taste modes: mixture components of the user's loves, weighted for
+  // discovery (nostalgic comfort canon and stale verdicts pull less).
+  const modeWeights = discoveryWeights(ratings, movieByIdAll);
+  const lovedForModes: ModeSample[] = ratings
+    .filter((rating) => rating.verdict === "loved" || (rating.rankScore ?? 0) >= VERDICT_BANDS.loved.min)
+    .flatMap((rating) => {
+      const movie = movieByIdAll.get(rating.tmdbId);
+      const embedding = signalEmbeddingsById.get(rating.tmdbId);
+      if (!movie || !embedding?.length) return [];
+      return [
+        {
+          movie,
+          rankScore: rating.rankScore ?? VERDICT_BANDS.loved.min,
+          embedding,
+          weight: modeWeights.get(rating.tmdbId) ?? 1
+        }
+      ];
+    });
+  const modes = buildTasteModes(lovedForModes);
+
+  // Candidate retrieval: the learned taste direction plus one anchor per
+  // taste mode. Mode centroids replace raw top-loved anchors so two
+  // near-identical favorites (Shrek + Shrek 2) cannot double-pull retrieval
+  // toward one neighborhood.
   try {
     const queries: number[][] = [];
     if (model?.embeddingDirection) queries.push(model.embeddingDirection);
-    const topLoved = [...ratings]
-      .filter((rating) => (rating.rankScore ?? 0) >= VERDICT_BANDS.loved.min || POSITIVE_RATINGS.has(rating.rating))
-      .sort((a, b) => (b.rankScore ?? 0) - (a.rankScore ?? 0))
-      .slice(0, LOVED_ANCHOR_COUNT);
-    for (const rating of topLoved) {
-      const vector = signalEmbeddingsById.get(rating.tmdbId);
-      if (vector?.length) queries.push(vector);
+    if (modes.length) {
+      for (const mode of modes.slice(0, LOVED_ANCHOR_COUNT)) queries.push(mode.centroid);
+    } else {
+      const topLoved = [...ratings]
+        .filter((rating) => (rating.rankScore ?? 0) >= VERDICT_BANDS.loved.min || POSITIVE_RATINGS.has(rating.rating))
+        .sort((a, b) => (b.rankScore ?? 0) - (a.rankScore ?? 0))
+        .slice(0, LOVED_ANCHOR_COUNT);
+      for (const rating of topLoved) {
+        const vector = signalEmbeddingsById.get(rating.tmdbId);
+        if (vector?.length) queries.push(vector);
+      }
     }
     if (queries.length) {
       embeddingMatches = (
@@ -1006,7 +1161,7 @@ export async function generateRecommendations(
     let scored: ScoredCandidate[];
     if (model) {
       const lovedContexts = lovedContextsFor(movies, ratings, signalEmbeddingsById);
-      const movieById = new Map(movies.map((movie) => [movie.tmdbId, movie]));
+      const movieById = movieByIdAll;
       // Display calibration: map raw (shrunk) predictions onto the user's own
       // rank-score distribution so top picks read like their top ratings.
       let calibrator: ScoreCalibrator | null = null;
@@ -1022,9 +1177,30 @@ export async function generateRecommendations(
       } catch (error) {
         console.warn("Score calibration unavailable", error instanceof Error ? error.message : error);
       }
-      scored = candidatePool.map((movie) =>
-        scoreCandidateWithModel(movie, model!, candidateEmbeddings.get(movie.tmdbId), exposedIds, lovedContexts, calibrator)
-      );
+      // P(already seen): rating-accurate picks the user has watched are useless.
+      let seenProbability: ((movie: Movie) => number) | null = null;
+      try {
+        seenProbability = buildSeenProbability(ratings, exposures, appealSignals, movieById);
+      } catch (error) {
+        console.warn("Seen model unavailable for recommendations", error instanceof Error ? error.message : error);
+      }
+      scored = candidatePool.map((movie) => {
+        const pSeen = seenProbability ? seenProbability(movie) : 0;
+        const candidate = scoreCandidateWithModel(
+          movie,
+          model!,
+          candidateEmbeddings.get(movie.tmdbId),
+          exposedIds,
+          lovedContexts,
+          calibrator,
+          pSeen
+        );
+        candidate.breakdown.seenProbability = Number(pSeen.toFixed(3));
+        return candidate;
+      });
+
+      const lovedEmbeddings = lovedForModes.map((sample) => sample.embedding);
+      selected = assembleSlate(scored, limit, { modes, candidateEmbeddings, lovedEmbeddings });
     } else {
       // Legacy anchor/profile scoring: cold-start path until enough graded history exists.
       const ratedEmbeddingList: MovieEmbedding[] = Array.from(signalEmbeddingsById.entries()).flatMap(([tmdbId, embedding]) =>
@@ -1041,10 +1217,10 @@ export async function generateRecommendations(
           semantic: semanticContextForMovie(movie, candidateEmbeddings.get(movie.tmdbId), positiveAnchors, negativeAnchor, ratedContexts)
         })
       );
+      scored.sort((a, b) => b.score - a.score || b.baselineScore - a.baselineScore);
+      selected = applyDiversity(scored, limit);
     }
 
-    scored.sort((a, b) => b.score - a.score || b.baselineScore - a.baselineScore);
-    selected = applyDiversity(scored, limit);
     if (!selected.length) throw new Error("No scored candidates available");
   } catch {
     fallback = true;

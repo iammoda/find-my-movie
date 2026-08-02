@@ -8,7 +8,8 @@ import { publicMovie } from "@/lib/publicMovie";
 import { isReleasedAtLeastDaysAgo, mainstreamScore } from "@/lib/quality";
 import { VERDICT_BANDS } from "@/lib/ranking";
 import { type MovieStore } from "@/lib/store";
-import { buildUncertaintyEstimator, loadTasteModel, predictTasteScore, predictedRankScore } from "@/lib/tasteModel";
+import { buildUncertaintyEstimator, discoveryWeights, loadTasteModel, predictTasteScore, predictedRankScore } from "@/lib/tasteModel";
+import { buildTasteModes, type ModeSample } from "@/lib/tasteClusters";
 import { buildTasteTestQueue, usableTasteTestMovie, type TasteTestQueueOptions } from "@/lib/tasteTest";
 import { fetchBrowseMovies, fetchCatalogExpansion, fetchStarterPool } from "@/lib/tmdb";
 import { fetchBrowseTv, fetchTvCatalogExpansion, fetchTvStarterPool } from "@/lib/tmdbTv";
@@ -142,14 +143,28 @@ async function deckModelSignals(
       }
     }
 
-    // Loved-neighborhood probes: unrated movies embedding-close to the top-loved.
-    const topLoved = [...ratings]
+    // Loved-neighborhood probes: unrated titles embedding-close to the user's
+    // taste modes (mode centroids, so near-duplicate favorites cannot
+    // double-pull one neighborhood).
+    const signalMovieById = new Map(signalMovies.map((movie) => [movie.tmdbId, movie]));
+    const modeWeights = discoveryWeights(ratings, signalMovieById);
+    const lovedForModes: ModeSample[] = ratings
       .filter((rating) => rating.verdict === "loved" || (rating.rankScore ?? 0) >= VERDICT_BANDS.loved.min)
-      .sort((a, b) => (b.rankScore ?? 0) - (a.rankScore ?? 0))
-      .slice(0, LOVED_ANCHOR_COUNT);
-    const queries = topLoved
-      .map((rating) => signalEmbeddingsById.get(rating.tmdbId))
-      .filter((vector): vector is number[] => Boolean(vector?.length));
+      .flatMap((rating) => {
+        const movie = signalMovieById.get(rating.tmdbId);
+        const embedding = signalEmbeddingsById.get(rating.tmdbId);
+        if (!movie || !embedding?.length) return [];
+        return [{ movie, rankScore: rating.rankScore ?? VERDICT_BANDS.loved.min, embedding, weight: modeWeights.get(rating.tmdbId) ?? 1 }];
+      });
+    const modes = buildTasteModes(lovedForModes);
+    const queries = modes.length
+      ? modes.slice(0, LOVED_ANCHOR_COUNT).map((mode) => mode.centroid)
+      : [...ratings]
+          .filter((rating) => rating.verdict === "loved" || (rating.rankScore ?? 0) >= VERDICT_BANDS.loved.min)
+          .sort((a, b) => (b.rankScore ?? 0) - (a.rankScore ?? 0))
+          .slice(0, LOVED_ANCHOR_COUNT)
+          .map((rating) => signalEmbeddingsById.get(rating.tmdbId))
+          .filter((vector): vector is number[] => Boolean(vector?.length));
     if (queries.length) {
       const excluded = Array.from(handledIds);
       const matches = (

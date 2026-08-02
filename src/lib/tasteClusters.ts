@@ -184,3 +184,93 @@ export function buildTasteClusters(samples: LovedMovieSample[], maxClusters = 5)
 
   return clusters.sort((a, b) => b.size - a.size);
 }
+
+/**
+ * Taste modes: the mixture components of a person's taste. A single learned
+ * direction averages "comfort comedy nights" and "tense thriller nights" into
+ * a centroid that matches neither; modes keep them separate so retrieval and
+ * slate allocation can serve each side of the user proportionally.
+ */
+export interface TasteMode {
+  label: string;
+  centroid: number[];
+  /** Discovery-weighted share of the user's loves (nostalgia/recency applied upstream). */
+  share: number;
+  memberIds: Set<number>;
+  exemplars: string[];
+}
+
+export interface ModeSample extends LovedMovieSample {
+  /** Discovery weight: nostalgia-discounted, recency-decayed. */
+  weight: number;
+}
+
+export function buildTasteModes(samples: ModeSample[], maxModes = 5): TasteMode[] {
+  const usable = samples.filter((sample) => sample.embedding.length > 0);
+  if (usable.length < MIN_MOVIES_FOR_CLUSTERING) return [];
+
+  const dim = usable[0].embedding.length;
+  const normalized = usable.map((sample) => normalize(sample.embedding));
+  const k = Math.max(2, Math.min(maxModes, Math.floor(usable.length / MIN_MOVIES_FOR_CLUSTERING)));
+
+  let centroids = initialCentroids(usable, normalized, k);
+  const assignments = new Array<number>(usable.length).fill(0);
+
+  for (let iteration = 0; iteration < MAX_KMEANS_ITERATIONS; iteration += 1) {
+    let changed = false;
+    for (let index = 0; index < normalized.length; index += 1) {
+      let best = 0;
+      let bestSimilarity = -Infinity;
+      for (let centroidIndex = 0; centroidIndex < centroids.length; centroidIndex += 1) {
+        const similarity = dot(normalized[index], centroids[centroidIndex]);
+        if (similarity > bestSimilarity) {
+          bestSimilarity = similarity;
+          best = centroidIndex;
+        }
+      }
+      if (assignments[index] !== best) {
+        assignments[index] = best;
+        changed = true;
+      }
+    }
+    if (!changed && iteration > 0) break;
+
+    // Weighted centroid update: nostalgic/stale loves pull less.
+    centroids = centroids.map((centroid, centroidIndex) => {
+      const memberIndexes = normalized.map((_, index) => index).filter((index) => assignments[index] === centroidIndex);
+      if (!memberIndexes.length) return centroid;
+      const weighted = new Array<number>(dim).fill(0);
+      let totalWeight = 0;
+      for (const index of memberIndexes) {
+        const weight = Math.max(0.01, usable[index].weight);
+        totalWeight += weight;
+        for (let d = 0; d < dim; d += 1) weighted[d] += normalized[index][d] * weight;
+      }
+      for (let d = 0; d < dim; d += 1) weighted[d] /= totalWeight;
+      return normalize(weighted);
+    });
+  }
+
+  const modes: TasteMode[] = [];
+  let totalShare = 0;
+  for (let centroidIndex = 0; centroidIndex < centroids.length; centroidIndex += 1) {
+    const memberIndexes = normalized.map((_, index) => index).filter((index) => assignments[index] === centroidIndex);
+    if (memberIndexes.length < MIN_CLUSTER_SIZE) continue;
+    const members = memberIndexes.map((index) => usable[index]);
+    const share = members.reduce((sum, member) => sum + Math.max(0.01, member.weight), 0);
+    totalShare += share;
+    const sorted = [...members].sort((a, b) => b.weight * b.rankScore - a.weight * a.rankScore);
+    modes.push({
+      label: clusterLabel(members),
+      centroid: centroids[centroidIndex],
+      share,
+      memberIds: new Set(members.map((member) => member.movie.tmdbId)),
+      exemplars: sorted.slice(0, EXEMPLARS_PER_CLUSTER).map((member) => member.movie.title)
+    });
+  }
+
+  if (totalShare > 0) {
+    for (const mode of modes) mode.share /= totalShare;
+  }
+  return modes.sort((a, b) => b.share - a.share);
+}

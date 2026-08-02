@@ -235,6 +235,10 @@ export interface RecommendationScoreBreakdown {
   predictedRankScore?: number;
   modelEmbeddingScore?: number;
   modelTraitScore?: number;
+  /** P(user already saw this) at scoring time. */
+  seenProbability?: number;
+  /** Taste-mode label the pick was allocated to. */
+  tasteMode?: string;
 }
 
 export interface RecommendationItem {

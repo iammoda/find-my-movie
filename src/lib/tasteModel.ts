@@ -100,6 +100,78 @@ function latestExposureFor(tmdbId: number, exposures: MovieExposure[], before?: 
   return latest;
 }
 
+/**
+ * Label hygiene: retrospective satisfaction is not prospective desire.
+ *
+ * Loves of formative-era, mega-popular comfort titles (the Shrek problem) are
+ * mostly nostalgia - affective memory of a first viewing decades ago - and
+ * treating them as top taste anchors floods recommendations with lookalikes
+ * of childhood canon. They stay valid signal, just discounted for discovery.
+ * Rapid backfill sessions (rating a life's history at 20+/hour) compound the
+ * effect and discount further. Only positive ratings are discounted -
+ * disliking a nostalgic title is fully informative.
+ */
+const NOSTALGIA_FORMATIVE_YEARS = 15;
+const NOSTALGIA_COMFORT_GENRES = new Set(["Animation", "Family", "Comedy", "Kids"]);
+const NOSTALGIA_MIN_VOTES = 5000;
+const NOSTALGIA_DISCOUNT = 0.5;
+const RAPID_SESSION_PER_HOUR = 20;
+const RAPID_SESSION_EXTRA_DISCOUNT = 0.7;
+/** Taste drifts: older verdicts fade with this half-life (relative to the newest rating). */
+const RECENCY_HALF_LIFE_DAYS = 365;
+
+function sessionHourCounts(ratings: Rating[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const rating of ratings) {
+    const bucket = rating.createdAt.slice(0, 13);
+    counts.set(bucket, (counts.get(bucket) ?? 0) + 1);
+  }
+  return counts;
+}
+
+export function nostalgiaDiscount(movie: Movie, rating: Rating, y: number, sessionCounts: Map<string, number>): number {
+  if (y <= 0.1) return 1;
+  const releaseYear = movie.releaseDate ? Number(movie.releaseDate.slice(0, 4)) : NaN;
+  const ratedYear = Number(rating.createdAt.slice(0, 4));
+  if (!Number.isFinite(releaseYear) || !Number.isFinite(ratedYear)) return 1;
+  const formativeEra = ratedYear - releaseYear >= NOSTALGIA_FORMATIVE_YEARS;
+  const comfortFare =
+    movie.voteCount >= NOSTALGIA_MIN_VOTES && movie.genres.some((genre) => NOSTALGIA_COMFORT_GENRES.has(genre.name));
+  if (!formativeEra || !comfortFare) return 1;
+
+  const rapidSession = (sessionCounts.get(rating.createdAt.slice(0, 13)) ?? 0) >= RAPID_SESSION_PER_HOUR;
+  return NOSTALGIA_DISCOUNT * (rapidSession ? RAPID_SESSION_EXTRA_DISCOUNT : 1);
+}
+
+export function recencyDecay(ratingUpdatedAt: string, newestUpdatedAt: string): number {
+  const ageMs = new Date(newestUpdatedAt).getTime() - new Date(ratingUpdatedAt).getTime();
+  if (!Number.isFinite(ageMs) || ageMs <= 0) return 1;
+  const ageDays = ageMs / (24 * 60 * 60 * 1000);
+  return 0.5 ** (ageDays / RECENCY_HALF_LIFE_DAYS);
+}
+
+/**
+ * Discovery weight per rated title: nostalgia-discounted and recency-decayed.
+ * Used wherever loves act as anchors for finding NEW content (taste modes,
+ * retrieval); full weights still apply for comfort-mode/display purposes.
+ */
+export function discoveryWeights(ratings: Rating[], movieById: Map<number, Movie>): Map<number, number> {
+  const sessionCounts = sessionHourCounts(ratings);
+  let newestUpdatedAt = "";
+  for (const rating of ratings) {
+    if (rating.updatedAt > newestUpdatedAt) newestUpdatedAt = rating.updatedAt;
+  }
+  const weights = new Map<number, number>();
+  for (const rating of ratings) {
+    const movie = movieById.get(rating.tmdbId);
+    if (!movie) continue;
+    const rankScore = rating.rankScore ?? seedFromLegacyRating(rating.rating)?.rankScore ?? 5;
+    const y = (rankScore - 5) / 5;
+    weights.set(rating.tmdbId, nostalgiaDiscount(movie, rating, y, sessionCounts) * recencyDecay(rating.updatedAt, newestUpdatedAt));
+  }
+  return weights;
+}
+
 function ratingSampleWeight(rating: Rating, y: number, exposure: MovieExposure | null): number {
   let weight = 1;
   if (rating.verdict === "fine") weight *= 0.6;
@@ -128,6 +200,11 @@ export function buildTasteSamples(
   const movieById = new Map(movies.map((movie) => [movie.tmdbId, movie]));
   const ratedIds = new Set(ratings.map((rating) => rating.tmdbId));
   const samples: TasteSample[] = [];
+  const sessionCounts = sessionHourCounts(ratings);
+  let newestUpdatedAt = "";
+  for (const rating of ratings) {
+    if (rating.updatedAt > newestUpdatedAt) newestUpdatedAt = rating.updatedAt;
+  }
 
   for (const rating of ratings) {
     const movie = movieById.get(rating.tmdbId);
@@ -140,7 +217,10 @@ export function buildTasteSamples(
     samples.push({
       tmdbId: rating.tmdbId,
       y,
-      weight: ratingSampleWeight(rating, y, exposure),
+      weight:
+        ratingSampleWeight(rating, y, exposure) *
+        nostalgiaDiscount(movie, rating, y, sessionCounts) *
+        recencyDecay(rating.updatedAt, newestUpdatedAt),
       embedding: embeddingsById.get(rating.tmdbId) ?? null,
       traits: traitFeaturesFor(movie),
       kind: "rating"
