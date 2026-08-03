@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { genreConcentration, meanProbability, precisionAtK, rankingAuc } from "@/lib/engineMetrics";
-import { assembleSlate, type ScoredCandidate } from "@/lib/recommendations";
+import { assembleSlate, scoreCandidateWithModel, type ScoredCandidate } from "@/lib/recommendations";
 import { buildTasteModes, type ModeSample } from "@/lib/tasteClusters";
 import { nostalgiaDiscount, recencyDecay } from "@/lib/tasteModel";
 import type { Movie, Rating, RecommendationScoreBreakdown } from "@/lib/types";
@@ -162,5 +162,75 @@ describe("assembleSlate", () => {
     expect(ids).not.toContain(2); // twin of a selected pick
     expect(ids).not.toContain(3); // twin of an already-watched love
     expect(ids).toContain(4);
+  });
+
+  it("exempts the explicitly filtered genre from the per-genre cap", () => {
+    // A genre-filtered run: every candidate carries the focus genre. Without
+    // the exemption the cap of 3 hard-limited the slate to exactly 3 items.
+    const comedy = [{ id: 35, name: "Comedy" }];
+    const scored = Array.from({ length: 12 }, (_, i) => candidate(1 + i, 10 - i * 0.1, comedy));
+    // Orthogonal embeddings: distinct movies, not franchise near-duplicates.
+    const oneHot = (i: number) => Array.from({ length: 16 }, (_, d) => (d === i ? 1 : 0));
+    const candidateEmbeddings = new Map<number, number[]>(scored.map((item, i) => [item.movie.tmdbId, oneHot(i)]));
+
+    const capped = assembleSlate(scored, 10, { modes: [], candidateEmbeddings, lovedEmbeddings: [] });
+    expect(capped.length).toBe(3); // documented old behavior without a focus genre
+
+    const slate = assembleSlate(scored, 10, { modes: [], candidateEmbeddings, lovedEmbeddings: [], focusGenreId: 35 });
+    expect(slate.length).toBe(10);
+
+    // Secondary genres are still capped on a focused run.
+    const horrorComedy = [{ id: 35, name: "Comedy" }, { id: 27, name: "Horror" }];
+    const mixed = [
+      ...Array.from({ length: 6 }, (_, i) => candidate(50 + i, 10 - i * 0.1, horrorComedy)),
+      ...Array.from({ length: 6 }, (_, i) => candidate(70 + i, 8 - i * 0.1, comedy))
+    ];
+    const mixedEmbeddings = new Map<number, number[]>(mixed.map((item, i) => [item.movie.tmdbId, oneHot(i)]));
+    const mixedSlate = assembleSlate(mixed, 10, { modes: [], candidateEmbeddings: mixedEmbeddings, lovedEmbeddings: [], focusGenreId: 35 });
+    const horrorCount = mixedSlate.filter((item) => item.movie.genres.some((genre) => genre.name === "Horror")).length;
+    expect(horrorCount).toBeLessThanOrEqual(3);
+    expect(mixedSlate.length).toBeGreaterThan(3);
+  });
+});
+
+describe("scoreCandidateWithModel neighbor blend", () => {
+  const model = {
+    version: "test",
+    embeddingDim: 3,
+    traitVocab: [],
+    traitIndex: new Map<string, number>(),
+    weights: new Float64Array([0.1, 0.1, 0.1]),
+    bias: 0,
+    lambda: 8,
+    gcv: 0,
+    sampleCount: 20,
+    ratingSampleCount: 20,
+    embeddingDirection: [1, 0, 0]
+  };
+
+  it("lifts candidates that taste neighbors loved and records the evidence", () => {
+    const target = movie(1);
+    const plain = scoreCandidateWithModel(target, model, [0.1, 0.1, 0.1], new Set(), [], null, 0, null);
+    const boosted = scoreCandidateWithModel(target, model, [0.1, 0.1, 0.1], new Set(), [], null, 0, { score: 9.2, support: 40 });
+
+    expect(boosted.score).toBeGreaterThan(plain.score);
+    expect(boosted.breakdown.neighborScore).toBeCloseTo(9.2);
+    expect(boosted.breakdown.neighborSupport).toBe(40);
+    expect(boosted.explanation).toContain("People who rate like you");
+    // Display prediction moves toward the neighbor estimate with confidence.
+    expect(boosted.breakdown.predictedRankScore!).toBeGreaterThan(plain.breakdown.predictedRankScore!);
+  });
+
+  it("drags candidates that taste neighbors disliked", () => {
+    const target = movie(2);
+    const plain = scoreCandidateWithModel(target, model, [0.1, 0.1, 0.1], new Set(), [], null, 0, null);
+    const dragged = scoreCandidateWithModel(target, model, [0.1, 0.1, 0.1], new Set(), [], null, 0, { score: 2.4, support: 40 });
+    expect(dragged.score).toBeLessThan(plain.score);
+  });
+
+  it("ignores thin neighbor evidence in the explanation", () => {
+    const target = movie(3);
+    const thin = scoreCandidateWithModel(target, model, [0.1, 0.1, 0.1], new Set(), [], null, 0, { score: 9.9, support: 3 });
+    expect(thin.explanation).not.toContain("People who rate like you");
   });
 });

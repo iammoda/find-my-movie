@@ -105,11 +105,22 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
 
   const currentMovie = movies[index] ?? null;
   const displayMovie = detailMovie?.tmdbId === currentMovie?.tmdbId ? detailMovie : currentMovie;
-  const nextMovies = movies.slice(index + 1, index + 4);
+  const nextMovies = useMemo(() => movies.slice(index + 1, index + 4), [movies, index]);
   const meaningfulRatingCount = useMemo(() => {
     return [...ratings.values()].filter((rating) => (rating.verdict ? true : rating.rating !== "skip")).length;
   }, [ratings]);
   const cinematicBackdrop = posterUrl(currentMovie?.backdropPath ?? currentMovie?.posterPath ?? null, "w780");
+
+  // Warm the next cards' backdrops so each swipe doesn't wait on a fresh
+  // ~150KB image fetch for the cinematic background swap.
+  useEffect(() => {
+    for (const movie of nextMovies.slice(0, 2)) {
+      const backdrop = posterUrl(movie.backdropPath ?? movie.posterPath ?? null, "w780");
+      if (!backdrop) continue;
+      const image = new window.Image();
+      image.src = backdrop;
+    }
+  }, [nextMovies]);
 
   const filterUnhandledMovies = useCallback((items: Movie[]) => {
     return items.filter((movie) => !handledIdsRef.current.has(movie.tmdbId));
@@ -607,7 +618,7 @@ export function MovieCarousel({ canRate = true, mediaType = "movie" }: { canRate
                     }}
                     aria-label={`Open details for ${currentMovie.title}. Swipe right to watchlist, left to pass, or press L, F, or D to rate.`}
                   >
-                    <MoviePoster movie={currentMovie} />
+                    <MoviePoster movie={currentMovie} priority />
                   </button>
                   <section
                     className="poster-back"

@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getSessionStore, unauthorized } from "@/lib/auth";
-import { generateRecommendations, recommendationRunIsFresh } from "@/lib/recommendations";
+import { generateRecommendations, recommendationRunIsFresh, recommendationRunIsReusable } from "@/lib/recommendations";
 import { genreSuggestions, resolveGenre } from "@/lib/genres";
 import { publicRecommendationResult, publicRecommendationRun } from "@/lib/publicMovie";
 import { recommendationReadiness } from "@/lib/rating";
 import type { MediaType } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+/** Full regeneration (model fit + vector retrieval + scoring) can exceed serverless defaults. */
+export const maxDuration = 60;
 
 export async function GET(request: Request) {
   const store = await getSessionStore();
@@ -14,6 +16,8 @@ export async function GET(request: Request) {
 
   const searchParams = new URL(request.url).searchParams;
   const mediaType: MediaType = searchParams.get("media") === "tv" ? "tv" : "movie";
+  // "New list": bypass run reuse and exclude everything previously recommended.
+  const fresh = searchParams.get("fresh") === "1";
   const genreInput = searchParams.get("genre")?.trim() ?? "";
   let genre: ReturnType<typeof resolveGenre> = null;
   if (genreInput) {
@@ -26,14 +30,17 @@ export async function GET(request: Request) {
     }
   }
 
-  // Fast path: no new ratings since the last run for this media -> serve it.
   const [ratings, latestRun, hidden] = await Promise.all([
     store.listRatings(),
     store.getLatestRecommendationRun(undefined, mediaType),
     store.listHiddenRecommendations()
   ]);
+  // Fast path: serve the stored run while it is still representative. A
+  // single new rating no longer forces a synchronous full regeneration; the
+  // response is marked stale so clients can offer an explicit refresh.
   const readiness = recommendationReadiness(ratings);
-  if (readiness.ready && latestRun && recommendationRunIsFresh(latestRun, ratings, mediaType, genre?.id ?? null)) {
+  if (!fresh && readiness.ready && latestRun && recommendationRunIsReusable(latestRun, ratings, mediaType, genre?.id ?? null)) {
+    const stale = !recommendationRunIsFresh(latestRun, ratings, mediaType, genre?.id ?? null);
     const hiddenIds = new Set(hidden);
     const run = publicRecommendationRun({
       ...latestRun,
@@ -46,6 +53,7 @@ export async function GET(request: Request) {
       recommendations: run.items,
       fallback: Boolean((latestRun.metadata as { fallback?: boolean } | null)?.fallback),
       cached: true,
+      stale,
       generatedAt: latestRun.createdAt,
       genre,
       mediaType
@@ -55,7 +63,8 @@ export async function GET(request: Request) {
   const result = await generateRecommendations(store, undefined, undefined, {
     genreId: genre?.id,
     genreName: genre?.name,
-    mediaType
+    mediaType,
+    freshOnly: fresh
   });
   return NextResponse.json({
     ...publicRecommendationResult(result),

@@ -1,3 +1,4 @@
+import { after } from "next/server";
 import { EMBEDDING_MODEL, embedMovies, embedTexts, embeddingConfigured } from "@/lib/embeddings";
 import type { MovieStore } from "@/lib/store";
 import { featureTextForMovie } from "@/lib/taste";
@@ -105,10 +106,16 @@ export async function ensureMovieIntelligence(store: MovieStore, movies: Movie[]
   return result;
 }
 
-/** Fire-and-forget runtime hook: enrich newly upserted movies without blocking the response. */
+/**
+ * Runtime hook: enrich newly upserted movies without blocking the response.
+ * Uses after() so serverless runtimes (Vercel) keep the function alive until
+ * the work settles instead of freezing it when the response is sent.
+ */
 export function scheduleMovieIntelligence(store: MovieStore, movies: Movie[]): void {
   if (!movies.length || !embeddingConfigured()) return;
-  void ensureMovieIntelligence(store, movies).catch((error) => {
-    console.warn("Background movie intelligence failed", error instanceof Error ? error.message : error);
-  });
+  after(() =>
+    ensureMovieIntelligence(store, movies).catch((error) => {
+      console.warn("Background movie intelligence failed", error instanceof Error ? error.message : error);
+    })
+  );
 }

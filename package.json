@@ -16,6 +16,8 @@
     "score:taxonomy": "tsx scripts/score-taxonomy.ts",
     "enrich": "tsx scripts/enrich-movies.ts",
     "eval:recommendations": "tsx scripts/eval-recommendations.ts",
+    "neighbors:backtest": "tsx scripts/build-taste-neighbors.ts --mode backtest",
+    "neighbors:score": "tsx scripts/build-taste-neighbors.ts --mode score --write",
     "migrate:ratings": "tsx scripts/migrate-ratings.ts",
     "reset": "tsx scripts/reset.ts",
     "supabase:check": "tsx scripts/check-supabase.ts",

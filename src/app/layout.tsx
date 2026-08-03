@@ -3,7 +3,6 @@ import Link from "next/link";
 import { accountsEnabled, getSessionUser } from "@/lib/auth";
 import { friendDisplayName } from "@/lib/displayName";
 import { getStore } from "@/lib/store";
-import { MediaSwitch } from "@/components/MediaSwitch";
 import UserMenu from "@/components/UserMenu";
 import "./globals.css";
 
@@ -32,7 +31,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
     <html lang="en">
       <body>
         <header className="app-shell">
-          <MediaSwitch />
+          <div className="media-switch" aria-label="Home">
+            <Link href="/" className="is-active">
+              Movies
+            </Link>
+          </div>
           <nav className="top-nav" aria-label="Secondary navigation">
             <Link href="/taste">Taste</Link>
             {authEnabled ? <Link href="/friends">Friends</Link> : null}

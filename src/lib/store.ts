@@ -19,6 +19,7 @@ import type {
   MovieCredit,
   MovieEmbedding,
   MovieEmbeddingMatch,
+  TasteNeighborScore,
   MovieEnrichment,
   MovieExposure,
   Profile,
@@ -137,6 +138,11 @@ export interface MovieStore {
     excludeTmdbIds?: number[],
     mediaType?: MediaType
   ): Promise<MovieEmbeddingMatch[]>;
+  /**
+   * Offline collaborative-filtering scores (scripts/build-taste-neighbors.ts).
+   * Optional: local JSON mode and older deployments return empty.
+   */
+  listTasteNeighborScores?(profileId?: string): Promise<TasteNeighborScore[]>;
   hideRecommendation(tmdbId: number, reason?: string | null, profileId?: string): Promise<void>;
   listHiddenRecommendations(profileId?: string): Promise<number[]>;
   saveRecommendationRun(input: RecommendationRunInput, profileId?: string): Promise<RecommendationRun>;
@@ -1025,11 +1031,33 @@ const MOVIE_SELECT_COLUMNS = [
   "updated_at"
 ].join(",");
 
+/** Warm catalog cache lifetime; writes merge into it instead of invalidating it. */
+const MOVIES_CACHE_TTL_MS = 30 * 60 * 1000;
+/** Deck/model exposure reads only need the recent behavioral window, not the full history. */
+const MAX_EXPOSURE_ROWS = 8000;
+
 class SupabaseMovieStore implements MovieStore {
   private moviesCache: { movies: Movie[]; expiresAt: number } | null = null;
   private moviesInFlight: Promise<Movie[]> | null = null;
 
   constructor(private db: SupabaseClient) {}
+
+  /**
+   * Merge freshly written movies into the warm catalog cache instead of
+   * dropping it. Background enrichment/expansion upserts run constantly; if
+   * every write nulled the cache, each deck load re-paid the full 18k-row
+   * paginated scan.
+   */
+  private mergeIntoMoviesCache(movies: Movie[]) {
+    if (!this.moviesCache || this.moviesCache.expiresAt <= Date.now()) return;
+    const byId = new Map(movies.map((movie) => [movie.tmdbId, movie]));
+    const merged = this.moviesCache.movies.map((existing) => byId.get(existing.tmdbId) ?? existing);
+    const existingIds = new Set(this.moviesCache.movies.map((movie) => movie.tmdbId));
+    for (const movie of movies) {
+      if (!existingIds.has(movie.tmdbId)) merged.push(movie);
+    }
+    this.moviesCache = { movies: merged, expiresAt: this.moviesCache.expiresAt };
+  }
 
   private async ensureProfile(profileId: string) {
     // Never mint a profile row for the anonymous read-only sentinel; an
@@ -1040,19 +1068,34 @@ class SupabaseMovieStore implements MovieStore {
 
   // PostgREST caps responses at 1000 rows; every unbounded list must page through
   // with .range() or newer rows silently disappear once a table crosses the cap.
+  // Pages are fetched in parallel batches so large tables cost ~1 round trip
+  // per PAGE_FETCH_BATCH pages instead of one sequential round trip per page.
   private async fetchAllRows(
-    buildPage: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>
+    buildPage: (from: number, to: number) => PromiseLike<{ data: unknown[] | null; error: { message: string } | null }>,
+    maxRows = Number.POSITIVE_INFINITY
   ): Promise<Record<string, unknown>[]> {
     const pageSize = 1000;
+    const batchPages = 4;
     const rows: Record<string, unknown>[] = [];
-    for (let from = 0; ; from += pageSize) {
-      const { data, error } = await buildPage(from, from + pageSize - 1);
-      if (error) throw new Error(error.message);
-      const page = (data ?? []) as Record<string, unknown>[];
-      rows.push(...page);
-      if (page.length < pageSize) break;
+    for (let from = 0; rows.length < maxRows; from += pageSize * batchPages) {
+      const offsets = Array.from({ length: batchPages }, (_, index) => from + index * pageSize).filter(
+        (offset) => offset < maxRows
+      );
+      if (!offsets.length) break;
+      const results = await Promise.all(offsets.map((offset) => buildPage(offset, offset + pageSize - 1)));
+      let sawShortPage = false;
+      for (const { data, error } of results) {
+        if (error) throw new Error(error.message);
+        const page = (data ?? []) as Record<string, unknown>[];
+        rows.push(...page);
+        if (page.length < pageSize) {
+          sawShortPage = true;
+          break;
+        }
+      }
+      if (sawShortPage) break;
     }
-    return rows;
+    return rows.length > maxRows ? rows.slice(0, maxRows) : rows;
   }
 
   async listMovies(mediaType?: MediaType) {
@@ -1076,26 +1119,39 @@ class SupabaseMovieStore implements MovieStore {
 
   private async fetchAllMovies() {
     const pageSize = 1000;
+    const batchPages = 6;
     const rows: Record<string, unknown>[] = [];
 
-    for (let from = 0; from < MAX_CATALOG_ROWS; from += pageSize) {
-      const to = Math.min(from + pageSize - 1, MAX_CATALOG_ROWS - 1);
-      const { data, error } = await this.db
-        .from("movies")
-        .select(MOVIE_SELECT_COLUMNS)
-        .order("popularity", { ascending: false })
-        .range(from, to);
-      if (error) throw error;
-      rows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
-      if (!data || data.length < pageSize) break;
+    // Parallel page batches: the full 18k-row scan costs ~3 round trips
+    // instead of 18 sequential ones.
+    outer: for (let from = 0; from < MAX_CATALOG_ROWS; from += pageSize * batchPages) {
+      const offsets = Array.from({ length: batchPages }, (_, index) => from + index * pageSize).filter(
+        (offset) => offset < MAX_CATALOG_ROWS
+      );
+      const results = await Promise.all(
+        offsets.map((offset) =>
+          this.db
+            .from("movies")
+            .select(MOVIE_SELECT_COLUMNS)
+            .order("popularity", { ascending: false })
+            .range(offset, Math.min(offset + pageSize - 1, MAX_CATALOG_ROWS - 1))
+        )
+      );
+      for (const { data, error } of results) {
+        if (error) throw error;
+        rows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
+        if (!data || data.length < pageSize) break outer;
+      }
     }
 
     let factsByMovie = new Map<number, TasteFact[]>();
     if (rows.length) {
       const ids = rows.map((row) => Number(row.tmdb_id));
+      const factResults = await Promise.all(
+        chunkArray(ids, 1000).map((chunk) => this.db.from("movie_taste_facts").select("*").in("tmdb_id", chunk))
+      );
       const factRows: Record<string, unknown>[] = [];
-      for (const chunk of chunkArray(ids, 1000)) {
-        const { data, error } = await this.db.from("movie_taste_facts").select("*").in("tmdb_id", chunk);
+      for (const { data, error } of factResults) {
         if (!error) factRows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
       }
       factsByMovie = factRows.reduce((map, row) => {
@@ -1109,7 +1165,7 @@ class SupabaseMovieStore implements MovieStore {
 
     const movies = rows.map((row) => dbMovieToMovie(row, undefined, factsByMovie.get(Number(row.tmdb_id))));
     const result = movies.length ? movies : FALLBACK_MOVIES.map(withFacts);
-    this.moviesCache = { movies: result, expiresAt: Date.now() + 5 * 60 * 1000 };
+    this.moviesCache = { movies: result, expiresAt: Date.now() + MOVIES_CACHE_TTL_MS };
     return result;
   }
 
@@ -1153,16 +1209,19 @@ class SupabaseMovieStore implements MovieStore {
     }
 
     const ids = Array.from(new Set(tmdbIds));
+    const [movieResults, factResults] = await Promise.all([
+      Promise.all(chunkArray(ids, 500).map((chunk) => this.db.from("movies").select(MOVIE_SELECT_COLUMNS).in("tmdb_id", chunk))),
+      Promise.all(chunkArray(ids, 1000).map((chunk) => this.db.from("movie_taste_facts").select("*").in("tmdb_id", chunk)))
+    ]);
+
     const rows: Record<string, unknown>[] = [];
-    for (const chunk of chunkArray(ids, 500)) {
-      const { data, error } = await this.db.from("movies").select(MOVIE_SELECT_COLUMNS).in("tmdb_id", chunk);
+    for (const { data, error } of movieResults) {
       if (error) throw error;
       rows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
     }
 
     const factRows: Record<string, unknown>[] = [];
-    for (const chunk of chunkArray(ids, 1000)) {
-      const { data, error } = await this.db.from("movie_taste_facts").select("*").in("tmdb_id", chunk);
+    for (const { data, error } of factResults) {
       if (!error) factRows.push(...((data ?? []) as unknown as Record<string, unknown>[]));
     }
     const factsByMovie = factRows.reduce((map, row) => {
@@ -1196,8 +1255,8 @@ class SupabaseMovieStore implements MovieStore {
 
   async upsertMovies(movies: Movie[]) {
     if (!movies.length) return;
-    this.moviesCache = null;
     const enriched = movies.map(withFacts);
+    this.mergeIntoMoviesCache(enriched);
     const currentTime = now();
     const movieRows = enriched.map((movie) => ({
         tmdb_id: movie.tmdbId,
@@ -1222,9 +1281,13 @@ class SupabaseMovieStore implements MovieStore {
         updated_at: currentTime
       }));
 
-    for (const chunk of chunkArray(movieRows, 500)) {
-      const { error } = await this.db.from("movies").upsert(chunk, { onConflict: "tmdb_id" });
-      if (error) throw error;
+    {
+      const results = await Promise.all(
+        chunkArray(movieRows, 500).map((chunk) => this.db.from("movies").upsert(chunk, { onConflict: "tmdb_id" }))
+      );
+      for (const { error } of results) {
+        if (error) throw error;
+      }
     }
 
     const credits = enriched
@@ -1237,8 +1300,10 @@ class SupabaseMovieStore implements MovieStore {
         updated_at: currentTime
       }));
     if (credits.length) {
-      for (const chunk of chunkArray(credits, 500)) {
-        const { error: creditsError } = await this.db.from("movie_credits").upsert(chunk, { onConflict: "tmdb_id" });
+      const results = await Promise.all(
+        chunkArray(credits, 500).map((chunk) => this.db.from("movie_credits").upsert(chunk, { onConflict: "tmdb_id" }))
+      );
+      for (const { error: creditsError } of results) {
         if (creditsError) throw creditsError;
       }
     }
@@ -1253,10 +1318,12 @@ class SupabaseMovieStore implements MovieStore {
       }))
     );
     if (facts.length) {
-      for (const chunk of chunkArray(facts, 1000)) {
-        const { error: factsError } = await this.db.from("movie_taste_facts").upsert(chunk, {
-          onConflict: "tmdb_id,kind,value"
-        });
+      const results = await Promise.all(
+        chunkArray(facts, 1000).map((chunk) =>
+          this.db.from("movie_taste_facts").upsert(chunk, { onConflict: "tmdb_id,kind,value" })
+        )
+      );
+      for (const { error: factsError } of results) {
         if (factsError) throw factsError;
       }
     }
@@ -1298,7 +1365,13 @@ class SupabaseMovieStore implements MovieStore {
       const { error } = await this.db.from("movie_taste_facts").upsert(rows, { onConflict: "tmdb_id,kind,value" });
       if (error) throw error;
     }
-    this.moviesCache = null;
+    // Patch the warm cache in place: background enrichment writes one movie at
+    // a time and must not force a full catalog rescan per movie.
+    const cached = this.moviesCache?.movies.find((movie) => movie.tmdbId === tmdbId);
+    if (cached) {
+      const retained = (cached.tasteFacts ?? []).filter((fact) => fact.source !== source);
+      this.mergeIntoMoviesCache([withFacts({ ...cached, tasteFacts: [...retained, ...facts] })]);
+    }
   }
 
   async listRatings(profileId = DEFAULT_PROFILE_ID) {
@@ -1542,10 +1615,20 @@ class SupabaseMovieStore implements MovieStore {
   }
 
   async listExposures(profileId = DEFAULT_PROFILE_ID) {
-    const rows = await this.fetchAllRows((from, to) =>
-      this.db.from("movie_exposures").select("*").eq("profile_id", profileId).order("created_at").order("id").range(from, to)
+    // Newest-first with a row cap: exposures grow unbounded (one per card ever
+    // shown) and every consumer only needs the recent behavioral window.
+    const rows = await this.fetchAllRows(
+      (from, to) =>
+        this.db
+          .from("movie_exposures")
+          .select("*")
+          .eq("profile_id", profileId)
+          .order("created_at", { ascending: false })
+          .order("id", { ascending: false })
+          .range(from, to),
+      MAX_EXPOSURE_ROWS
     );
-    return rows.map(dbExposureToMovieExposure);
+    return rows.reverse().map(dbExposureToMovieExposure);
   }
 
   async deleteExposures(tmdbId: number, source: MovieExposure["source"], profileId = DEFAULT_PROFILE_ID) {
@@ -1563,8 +1646,10 @@ class SupabaseMovieStore implements MovieStore {
     const rows: Record<string, unknown>[] = [];
 
     if (tmdbIds?.length) {
-      for (const chunk of chunkArray(tmdbIds, 500)) {
-        const { data, error } = await this.db.from("movie_embeddings").select(select).in("tmdb_id", chunk);
+      const results = await Promise.all(
+        chunkArray(tmdbIds, 500).map((chunk) => this.db.from("movie_embeddings").select(select).in("tmdb_id", chunk))
+      );
+      for (const { data, error } of results) {
         if (error) throw error;
         rows.push(...((data ?? []) as Record<string, unknown>[]));
       }
@@ -1614,6 +1699,25 @@ class SupabaseMovieStore implements MovieStore {
     return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
       tmdbId: Number(row.tmdb_id),
       similarity: Number(row.similarity ?? 0)
+    }));
+  }
+
+  async listTasteNeighborScores(profileId = DEFAULT_PROFILE_ID) {
+    // Degrades to empty when the migration has not been applied yet.
+    const { data, error } = await this.db
+      .from("taste_neighbor_scores")
+      .select("tmdb_id,score,support")
+      .eq("profile_id", profileId)
+      .order("score", { ascending: false })
+      .limit(5000);
+    if (error) {
+      console.warn("Taste neighbor scores unavailable", error.message);
+      return [];
+    }
+    return ((data ?? []) as Record<string, unknown>[]).map((row) => ({
+      tmdbId: Number(row.tmdb_id),
+      score: Number(row.score),
+      support: Number(row.support ?? 0)
     }));
   }
 

@@ -60,7 +60,13 @@ export function tmdbConfigured() {
   return Boolean(process.env.TMDB_ACCESS_TOKEN);
 }
 
-export async function tmdbFetch<T>(path: string, params: Record<string, string | number | boolean | undefined> = {}): Promise<T> {
+const TMDB_MAX_RATE_LIMIT_RETRIES = 4;
+
+export async function tmdbFetch<T>(
+  path: string,
+  params: Record<string, string | number | boolean | undefined> = {},
+  attempt = 0
+): Promise<T> {
   const url = new URL(`${TMDB_BASE}${path}`);
   for (const [key, value] of Object.entries(params)) {
     if (value !== undefined) url.searchParams.set(key, String(value));
@@ -75,9 +81,13 @@ export async function tmdbFetch<T>(path: string, params: Record<string, string |
   });
 
   if (response.status === 429) {
+    // Bounded backoff: unbounded recursion here could hang a request forever.
+    if (attempt >= TMDB_MAX_RATE_LIMIT_RETRIES) {
+      throw new Error(`TMDB request failed: rate limited after ${attempt} retries`);
+    }
     const retryAfter = Number(response.headers.get("retry-after") ?? 1);
     await new Promise((resolve) => setTimeout(resolve, Math.min(retryAfter * 1000, 4000)));
-    return tmdbFetch<T>(path, params);
+    return tmdbFetch<T>(path, params, attempt + 1);
   }
 
   if (!response.ok) {
@@ -554,9 +564,13 @@ export async function fetchStarterPool(target = MAX_STARTER_POOL_MOVIES): Promis
   }
 
   try {
-    for (const slice of slices) {
-      await collectSeedSlice(byId, slice.params, slice.pages, target, slice.filter);
-      if (byId.size >= target) break;
+    // Slices in small parallel batches: sequential slices made the 900-title
+    // seed take dozens of round-trip generations. The target check between
+    // batches keeps API usage bounded once the pool is full.
+    const SLICE_BATCH = 3;
+    for (let index = 0; index < slices.length && byId.size < target; index += SLICE_BATCH) {
+      const batch = slices.slice(index, index + SLICE_BATCH);
+      await Promise.all(batch.map((slice) => collectSeedSlice(byId, slice.params, slice.pages, target, slice.filter)));
     }
   } catch (error) {
     console.warn("TMDB starter pool failed, returning partial catalog", error);

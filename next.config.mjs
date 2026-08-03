@@ -7,6 +7,16 @@ const nextConfig = {
         hostname: "image.tmdb.org"
       }
     ]
+  },
+  async redirects() {
+    // The TV catalog UI was removed; keep old bookmarks working.
+    return [
+      {
+        source: "/tv",
+        destination: "/",
+        permanent: false
+      }
+    ];
   }
 };
 

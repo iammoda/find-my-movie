@@ -20,6 +20,9 @@ export function scopedStore(store: MovieStore, profileId: string): MovieStore {
     upsertMovieEmbedding: (embedding) => store.upsertMovieEmbedding(embedding),
     matchMovieEmbeddings: (queryEmbedding, matchCount, excludeTmdbIds, mediaType) =>
       store.matchMovieEmbeddings(queryEmbedding, matchCount, excludeTmdbIds, mediaType),
+    listTasteNeighborScores: store.listTasteNeighborScores
+      ? () => store.listTasteNeighborScores!(profileId)
+      : undefined,
     getMovieEnrichment: (tmdbId) => store.getMovieEnrichment(tmdbId),
     listMovieEnrichments: () => store.listMovieEnrichments(),
     saveMovieEnrichment: (enrichment) => store.saveMovieEnrichment(enrichment),

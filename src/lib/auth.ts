@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import { ANONYMOUS_PROFILE_ID, DEFAULT_PROFILE_ID } from "@/lib/constants";
 import { scopedStore } from "@/lib/scopedStore";
 import { getStore, supabaseConfigured, type MovieStore } from "@/lib/store";
@@ -10,6 +11,23 @@ export interface SessionUser {
 }
 
 let warnedMissingAnonKey = false;
+
+// Session memo: supabase.auth.getUser() is a network round trip to Supabase
+// Auth, and every API route resolves the session. Keyed by the auth cookies,
+// so sign-in/sign-out/token rotation each get a distinct entry.
+const sessionCache = new Map<string, { expiresAt: number; user: SessionUser | null }>();
+const SESSION_CACHE_TTL_MS = 60_000;
+const SESSION_CACHE_MAX = 200;
+
+async function authCookieKey(): Promise<string> {
+  const cookieStore = await cookies();
+  return cookieStore
+    .getAll()
+    .filter((cookie) => cookie.name.includes("auth-token"))
+    .map((cookie) => `${cookie.name}=${cookie.value}`)
+    .sort()
+    .join(";");
+}
 
 /**
  * Accounts are active only when the Supabase store *and* the public anon key
@@ -33,10 +51,22 @@ export function accountsEnabled() {
 /** The signed-in user, or null. Always null-with-fallback in single-user mode. */
 export async function getSessionUser(): Promise<SessionUser | null> {
   if (!accountsEnabled()) return null;
+
+  const cacheKey = await authCookieKey();
+  if (!cacheKey) return null; // no auth cookies -> signed out, skip the round trip
+  const cached = sessionCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.user;
+
   const supabase = await createSupabaseServerClient();
   const { data, error } = await supabase.auth.getUser();
-  if (error || !data.user) return null;
-  return { id: data.user.id, email: data.user.email ?? null };
+  const user = error || !data.user ? null : { id: data.user.id, email: data.user.email ?? null };
+
+  if (sessionCache.size >= SESSION_CACHE_MAX) {
+    const oldestKey = sessionCache.keys().next().value;
+    if (oldestKey !== undefined) sessionCache.delete(oldestKey);
+  }
+  sessionCache.set(cacheKey, { expiresAt: Date.now() + SESSION_CACHE_TTL_MS, user });
+  return user;
 }
 
 /**

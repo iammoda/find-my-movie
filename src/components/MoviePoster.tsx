@@ -9,7 +9,7 @@ interface MoviePosterProps {
   priority?: boolean;
 }
 
-export function MoviePoster({ movie }: MoviePosterProps) {
+export function MoviePoster({ movie, priority = false }: MoviePosterProps) {
   const url = posterUrl(movie.posterPath);
   const year = movie.releaseDate?.slice(0, 4);
 
@@ -29,8 +29,7 @@ export function MoviePoster({ movie }: MoviePosterProps) {
       alt={`${movie.title} poster`}
       fill
       sizes="(max-width: 620px) 92vw, 430px"
-      priority={false}
-      unoptimized
+      priority={priority}
     />
   );
 }

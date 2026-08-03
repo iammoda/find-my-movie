@@ -610,11 +610,13 @@ export interface LoadedTasteModel {
  * Shared by recommendations and the taste-test deck; never throws - callers
  * get `model: null` (cold start / embeddings unavailable) and fall back.
  *
- * Fits are memoized briefly and keyed by the rating/appeal/watchlist state, so
- * same-page-load consumers share one fit while any new verdict forces a refit.
+ * Fits are memoized in a small per-key LRU (the key embeds profile id and
+ * rating state), so the deck and recommendations share one fit, concurrent
+ * users stop evicting each other, and only a genuinely new verdict refits.
  */
-let loadedModelCache: { key: string; expiresAt: number; value: LoadedTasteModel } | null = null;
-const LOADED_MODEL_TTL_MS = 60_000;
+const loadedModelCache = new Map<string, { expiresAt: number; value: LoadedTasteModel }>();
+const LOADED_MODEL_CACHE_MAX = 16;
+const LOADED_MODEL_TTL_MS = 5 * 60_000;
 
 // Embeddings are immutable per movie; keep them across refits so a new rating
 // only fetches the vectors it does not already have. Empty arrays mark movies
@@ -644,8 +646,12 @@ export async function loadTasteModel(
   signals: TasteModelSignals
 ): Promise<LoadedTasteModel> {
   const cacheKey = tasteModelCacheKey(signals);
-  if (loadedModelCache && loadedModelCache.key === cacheKey && loadedModelCache.expiresAt > Date.now()) {
-    return loadedModelCache.value;
+  const cached = loadedModelCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    // Refresh LRU position.
+    loadedModelCache.delete(cacheKey);
+    loadedModelCache.set(cacheKey, cached);
+    return cached.value;
   }
 
   const signalIds = Array.from(
@@ -666,7 +672,17 @@ export async function loadTasteModel(
   if (missing.length) {
     try {
       const fetched = await store.listMovieEmbeddings(missing);
-      if (signalEmbeddingCache.size + missing.length > SIGNAL_EMBEDDING_CACHE_MAX) signalEmbeddingCache.clear();
+      // Evict oldest entries instead of clearing: a wholesale clear forces a
+      // full re-fetch of every signal vector on the next request.
+      const overflow = signalEmbeddingCache.size + missing.length - SIGNAL_EMBEDDING_CACHE_MAX;
+      if (overflow > 0) {
+        const iterator = signalEmbeddingCache.keys();
+        for (let index = 0; index < overflow; index += 1) {
+          const oldest = iterator.next();
+          if (oldest.done) break;
+          signalEmbeddingCache.delete(oldest.value);
+        }
+      }
       const fetchedIds = new Set<number>();
       for (const embedding of fetched) {
         fetchedIds.add(embedding.tmdbId);
@@ -691,6 +707,11 @@ export async function loadTasteModel(
   }
 
   const value = { model, signalEmbeddingsById };
-  loadedModelCache = { key: cacheKey, expiresAt: Date.now() + LOADED_MODEL_TTL_MS, value };
+  loadedModelCache.set(cacheKey, { expiresAt: Date.now() + LOADED_MODEL_TTL_MS, value });
+  while (loadedModelCache.size > LOADED_MODEL_CACHE_MAX) {
+    const oldestKey = loadedModelCache.keys().next().value;
+    if (oldestKey === undefined) break;
+    loadedModelCache.delete(oldestKey);
+  }
   return value;
 }

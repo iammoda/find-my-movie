@@ -5,7 +5,7 @@ export const DEFAULT_PROFILE_ID = "default";
 export const ANONYMOUS_PROFILE_ID = "anon";
 
 export const PROMPT_VERSION = "taxonomy-anchor-v2";
-export const SCORING_VERSION = "learned-rank-v1";
+export const SCORING_VERSION = "learned-rank-v2-neighbors";
 export const LEGACY_SCORING_VERSION = "semantic-taxonomy-v2";
 
 export const MIN_RECOMMENDATION_RATINGS = 10;

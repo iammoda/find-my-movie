@@ -130,7 +130,16 @@ export function isDeepFact(fact: Pick<TasteFact, "kind">): boolean {
   return DEEP_TASTE_KINDS.has(fact.kind);
 }
 
+// deriveTasteFacts runs ~25 regex groups over title+overview+keywords and is
+// invoked repeatedly for the same movie objects (store mapping, deck filtering,
+// model features, scoring) within and across requests. Movie objects are
+// treated as immutable, so a WeakMap memo is safe and self-evicting.
+const derivedFactsMemo = new WeakMap<Movie, TasteFact[]>();
+
 export function deriveTasteFacts(movie: Movie): TasteFact[] {
+  const memoized = derivedFactsMemo.get(movie);
+  if (memoized) return memoized;
+
   const facts = new Map<string, TasteFact>();
 
   const add = (kind: TasteKind, value: string, weight = 1, source: TasteFact["source"] = "heuristic") => {
@@ -200,7 +209,9 @@ export function deriveTasteFacts(movie: Movie): TasteFact[] {
     }
   }
 
-  return Array.from(facts.values());
+  const result = Array.from(facts.values());
+  derivedFactsMemo.set(movie, result);
+  return result;
 }
 
 export function featureTextForMovie(movie: Movie): string {

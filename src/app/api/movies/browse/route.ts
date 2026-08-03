@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
+import { after } from "next/server";
 import { z } from "zod";
 import { getPublicStore } from "@/lib/auth";
 import { MEDIA_PROFILES, RUNTIME_STARTER_POOL_MOVIES, MIN_STABLE_RELEASE_DAYS } from "@/lib/constants";
+import { cachedMovieEmbeddings } from "@/lib/embeddingCache";
 import { handledMovieIds } from "@/lib/handled";
 import { isPrimaryAudienceMovie } from "@/lib/language";
 import { publicMovie } from "@/lib/publicMovie";
@@ -16,6 +18,8 @@ import { fetchBrowseTv, fetchTvCatalogExpansion, fetchTvStarterPool } from "@/li
 import type { AppealSignal, MediaType, Movie, MovieExposure, Rating, WatchlistItem } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
+/** Cold deck builds (model fit + TMDB seeding) can exceed serverless defaults. */
+export const maxDuration = 60;
 
 const querySchema = z.object({
   category: z.enum(["taste_test", "popular", "top_rated", "genre"]).default("taste_test"),
@@ -29,11 +33,6 @@ const MAX_PREDICTION_CANDIDATES = 1200;
 const LOVED_ANCHOR_COUNT = 5;
 const NEIGHBORHOOD_MATCHES_PER_ANCHOR = 40;
 
-// Candidate embeddings are immutable per movie; cache them across deck loads
-// so replans only fetch vectors for newly surfaced candidates.
-const candidateEmbeddingCache = new Map<number, number[]>();
-const CANDIDATE_EMBEDDING_CACHE_MAX = 3000;
-
 // Background catalog growth: when the deck runs short, pull deeper TMDB pages
 // so heavy raters never hit an empty deck. Throttled per server process.
 const QUEUE_REPLENISH_THRESHOLD = 30;
@@ -42,11 +41,56 @@ const CATALOG_EXPANSION_TARGET = 400;
 const CATALOG_EXPANSION_PAGE_WINDOW = 500;
 const lastCatalogExpansionAt: Record<MediaType, number> = { movie: 0, tv: 0 };
 
+// First-run seeding: the full 900-title starter pool takes far too long to
+// block a request on, so the deck serves a quick popular/top-rated slice
+// immediately and the pool ingests in the background.
+const STARTER_SEED_MIN_INTERVAL_MS = 5 * 60 * 1000;
+const starterSeedState: Record<MediaType, { inFlight: boolean; lastStartedAt: number }> = {
+  movie: { inFlight: false, lastStartedAt: 0 },
+  tv: { inFlight: false, lastStartedAt: 0 }
+};
+
+function scheduleStarterPoolSeed(store: MovieStore, mediaType: MediaType) {
+  const state = starterSeedState[mediaType];
+  const now = Date.now();
+  if (state.inFlight || now - state.lastStartedAt < STARTER_SEED_MIN_INTERVAL_MS) return;
+  state.inFlight = true;
+  state.lastStartedAt = now;
+  // after(): survives the response on serverless runtimes (see maybeExpandCatalog).
+  after(async () => {
+    try {
+      const pool =
+        mediaType === "tv" ? await fetchTvStarterPool(RUNTIME_STARTER_POOL_MOVIES) : await fetchStarterPool(RUNTIME_STARTER_POOL_MOVIES);
+      if (pool.length) {
+        await store.upsertMovies(pool);
+        console.info(`Starter pool seeded ${pool.length} ${mediaType} titles in the background`);
+      }
+    } catch (error) {
+      console.warn("Starter pool seeding failed", error instanceof Error ? error.message : error);
+    } finally {
+      starterSeedState[mediaType].inFlight = false;
+    }
+  });
+}
+
+/** A few parallel discover pages so a cold catalog can serve a deck in seconds, not minutes. */
+async function fetchQuickSeedSlice(mediaType: MediaType): Promise<Movie[]> {
+  const [popular, topRated] =
+    mediaType === "tv"
+      ? await Promise.all([fetchBrowseTv("popular", 1), fetchBrowseTv("top_rated", 1)])
+      : await Promise.all([fetchBrowseMovies("popular", 1), fetchBrowseMovies("top_rated", 1)]);
+  const byId = new Map<number, Movie>();
+  for (const movie of [...popular, ...topRated]) byId.set(movie.tmdbId, movie);
+  return Array.from(byId.values());
+}
+
 function maybeExpandCatalog(store: MovieStore, mediaType: MediaType, catalogSize: number) {
   const now = Date.now();
   if (now - lastCatalogExpansionAt[mediaType] < CATALOG_EXPANSION_MIN_INTERVAL_MS) return;
   lastCatalogExpansionAt[mediaType] = now;
-  void (async () => {
+  // after(): on serverless (Vercel) a fire-and-forget promise is frozen when
+  // the response is sent; after() keeps the function alive until it settles.
+  after(async () => {
     try {
       const pageOffset = Math.floor(catalogSize / CATALOG_EXPANSION_PAGE_WINDOW);
       const fresh =
@@ -60,26 +104,7 @@ function maybeExpandCatalog(store: MovieStore, mediaType: MediaType, catalogSize
     } catch (error) {
       console.warn("Catalog expansion failed", error instanceof Error ? error.message : error);
     }
-  })();
-}
-
-async function candidateEmbeddings(store: MovieStore, tmdbIds: number[]): Promise<Map<number, number[]>> {
-  const result = new Map<number, number[]>();
-  const missing: number[] = [];
-  for (const tmdbId of tmdbIds) {
-    const cached = candidateEmbeddingCache.get(tmdbId);
-    if (cached) result.set(tmdbId, cached);
-    else missing.push(tmdbId);
-  }
-  if (missing.length) {
-    const fetched = await store.listMovieEmbeddings(missing);
-    if (candidateEmbeddingCache.size + fetched.length > CANDIDATE_EMBEDDING_CACHE_MAX) candidateEmbeddingCache.clear();
-    for (const embedding of fetched) {
-      candidateEmbeddingCache.set(embedding.tmdbId, embedding.embedding);
-      result.set(embedding.tmdbId, embedding.embedding);
-    }
-  }
-  return result;
+  });
 }
 
 /**
@@ -128,7 +153,7 @@ async function deckModelSignals(
       .slice(0, MAX_PREDICTION_CANDIDATES);
 
     if (candidates.length) {
-      const embeddingById = await candidateEmbeddings(store, candidates.map((movie) => movie.tmdbId));
+      const embeddingById = await cachedMovieEmbeddings(store, candidates.map((movie) => movie.tmdbId));
       // Uncertainty anchors: the most decisive rated embeddings first.
       const anchorVectors = [...ratings]
         .sort((a, b) => Math.abs((b.rankScore ?? 5) - 5) - Math.abs((a.rankScore ?? 5) - 5))
@@ -194,6 +219,7 @@ export async function GET(request: Request) {
   const store = await getPublicStore();
 
   if (parsed.data.category === "taste_test") {
+    const startedAt = Date.now();
     const [ratings, exposures, appealSignals, watchlist, initialCached] = await Promise.all([
       store.listRatings(),
       store.listExposures(),
@@ -203,15 +229,29 @@ export async function GET(request: Request) {
     ]);
     let cached = initialCached;
     if (cached.length < 400) {
-      const starterPool =
-        mediaType === "tv" ? await fetchTvStarterPool(RUNTIME_STARTER_POOL_MOVIES) : await fetchStarterPool(RUNTIME_STARTER_POOL_MOVIES);
-      await store.upsertMovies(starterPool);
-      cached = await store.listMovies(mediaType);
+      // Seed the full pool off the request path; serve a quick slice now if
+      // the catalog cannot even fill one deck.
+      scheduleStarterPoolSeed(store, mediaType);
+      if (cached.length < 100) {
+        try {
+          const quickSlice = await fetchQuickSeedSlice(mediaType);
+          if (quickSlice.length) {
+            await store.upsertMovies(quickSlice);
+            cached = await store.listMovies(mediaType);
+          }
+        } catch (error) {
+          console.warn("Quick seed slice failed", error instanceof Error ? error.message : error);
+        }
+      }
     }
 
     const modelSignals = await deckModelSignals(store, mediaType, cached, ratings, exposures, appealSignals, watchlist);
     const movies = buildTasteTestQueue(cached, ratings, exposures, 80, { appealSignals, ...modelSignals });
     if (movies.length < QUEUE_REPLENISH_THRESHOLD) maybeExpandCatalog(store, mediaType, cached.length);
+    const durationMs = Date.now() - startedAt;
+    if (durationMs > 1000) {
+      console.info(`Deck build took ${durationMs}ms (catalog ${cached.length}, ratings ${ratings.length}, ${mediaType})`);
+    }
     return NextResponse.json({ movies: movies.map(publicMovie), page: parsed.data.page, source: parsed.data.category });
   }
 

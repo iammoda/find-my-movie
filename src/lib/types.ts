@@ -207,6 +207,15 @@ export interface MovieEmbeddingMatch {
   similarity: number;
 }
 
+/** Offline collaborative-filtering prediction from MovieLens taste neighbors. */
+export interface TasteNeighborScore {
+  tmdbId: number;
+  /** Predicted rank score on the user's 0-10 scale. */
+  score: number;
+  /** How many neighbor users rated the movie (evidence mass). */
+  support: number;
+}
+
 export interface RecommendationScoreBreakdown {
   positiveTraitScore: number;
   negativeTraitPenalty: number;
@@ -237,6 +246,10 @@ export interface RecommendationScoreBreakdown {
   modelTraitScore?: number;
   /** P(user already saw this) at scoring time. */
   seenProbability?: number;
+  /** Collaborative-filtering prediction from taste neighbors (0-10). */
+  neighborScore?: number;
+  /** Neighbor users who rated the movie. */
+  neighborSupport?: number;
   /** Taste-mode label the pick was allocated to. */
   tasteMode?: string;
 }

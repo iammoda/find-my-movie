@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { latestRatingTimestamp, recommendationRunIsFresh } from "@/lib/recommendations";
+import { SCORING_VERSION } from "@/lib/constants";
+import {
+  RUN_REUSE_MAX_AGE_MS,
+  latestRatingTimestamp,
+  recommendationRunIsFresh,
+  recommendationRunIsReusable
+} from "@/lib/recommendations";
 import type { Rating, RecommendationRun } from "@/lib/types";
 
 function rating(tmdbId: number, updatedAt: string): Rating {
@@ -14,12 +20,12 @@ function rating(tmdbId: number, updatedAt: string): Rating {
   };
 }
 
-function run(metadata: Record<string, unknown>, status = "ready"): RecommendationRun {
+function run(metadata: Record<string, unknown>, status = "ready", scoringVersion = SCORING_VERSION): RecommendationRun {
   return {
     id: "run-1",
     profileId: "default",
     promptVersion: "p",
-    scoringVersion: "s",
+    scoringVersion,
     status: status as RecommendationRun["status"],
     baselineAverage: null,
     recommendationAverage: null,
@@ -67,5 +73,45 @@ describe("recommendationRunIsFresh", () => {
   it("treats legacy runs without a signature and fallback runs as stale", () => {
     expect(recommendationRunIsFresh(run({ ratedCount: 2 }), ratings, "movie", null)).toBe(false);
     expect(recommendationRunIsFresh(run({ ...signature, mediaType: "movie", genreFilter: null }, "fallback"), ratings, "movie", null)).toBe(false);
+  });
+
+  it("regenerates runs produced by an older engine version", () => {
+    const oldEngine = run({ ...signature, mediaType: "movie", genreFilter: null }, "ready", "learned-rank-v1");
+    expect(recommendationRunIsFresh(oldEngine, ratings, "movie", null)).toBe(false);
+    expect(recommendationRunIsReusable(oldEngine, ratings, "movie", null)).toBe(false);
+
+    const coldStart = run({ ...signature, mediaType: "movie", genreFilter: null }, "ready", `${SCORING_VERSION}-legacy-coldstart`);
+    expect(recommendationRunIsFresh(coldStart, ratings, "movie", null)).toBe(true);
+  });
+});
+
+describe("recommendationRunIsReusable", () => {
+  const now = new Date("2026-08-01T00:05:00.000Z").getTime(); // 5 minutes after run creation
+
+  it("reuses a recent run despite a couple of new ratings, marked stale by freshness", () => {
+    const stored = run({ ...signature, mediaType: "movie", genreFilter: null });
+    const grown = [...ratings, rating(3, "2026-07-20T00:00:00.000Z"), rating(4, "2026-07-21T00:00:00.000Z")];
+    expect(recommendationRunIsFresh(stored, grown, "movie", null)).toBe(false);
+    expect(recommendationRunIsReusable(stored, grown, "movie", null, now)).toBe(true);
+  });
+
+  it("regenerates once enough new ratings landed or the run has aged out", () => {
+    const stored = run({ ...signature, mediaType: "movie", genreFilter: null });
+    const grownPastLimit = [
+      ...ratings,
+      rating(3, "2026-07-20T00:00:00.000Z"),
+      rating(4, "2026-07-21T00:00:00.000Z"),
+      rating(5, "2026-07-22T00:00:00.000Z")
+    ];
+    expect(recommendationRunIsReusable(stored, grownPastLimit, "movie", null, now)).toBe(false);
+
+    const grown = [...ratings, rating(3, "2026-07-20T00:00:00.000Z")];
+    const aged = new Date("2026-08-01T00:00:00.000Z").getTime() + RUN_REUSE_MAX_AGE_MS + 1;
+    expect(recommendationRunIsReusable(stored, grown, "movie", null, aged)).toBe(false);
+  });
+
+  it("regenerates when ratings were deleted", () => {
+    const stored = run({ ...signature, mediaType: "movie", genreFilter: null });
+    expect(recommendationRunIsReusable(stored, [ratings[0]], "movie", null, now)).toBe(false);
   });
 });

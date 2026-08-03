@@ -1185,6 +1185,56 @@ a {
   font-size: 12px;
 }
 
+.recommendation-history {
+  margin-top: 18px;
+}
+
+.recommendation-history-runs {
+  margin-top: 10px;
+  display: grid;
+  gap: 8px;
+}
+
+.recommendation-history-run {
+  border: 1px solid rgba(147, 143, 158, 0.18);
+  border-radius: var(--radius-list);
+  background: var(--surface-container-high);
+  padding: 8px 12px;
+}
+
+.recommendation-history-run summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--on-surface-variant, #cac4d0);
+}
+
+.recommendation-history-run ul {
+  list-style: none;
+  margin: 8px 0 4px;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.recommendation-history-run li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.recommendation-history-run .history-year {
+  opacity: 0.65;
+  font-size: 12px;
+}
+
+.recommendation-history-run .history-score {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: #c9bfff;
+  font-size: 12px;
+}
+
 .diagnostics-panel {
   margin-top: 12px;
   border: 1px solid rgba(147, 143, 158, 0.18);
